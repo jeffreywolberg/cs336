@@ -4,8 +4,6 @@ from collections import Counter
 from typing import Iterator, Union
 import numpy as np
 
-
-END_OF_TEXT_STR = "<|endoftext|>"
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""" # pattern
 
 class Tokenizer(ABC):
@@ -19,20 +17,26 @@ class Tokenizer(ABC):
         ...
 
 class BPETokenizer(Tokenizer):
-    def __init__(self):
-        # + special token + byte values (256 possible ones)
-        self._orig_vocab = {0: END_OF_TEXT_STR.encode("utf-8")}
-        self._orig_vocab.update({i+1 : bytes([i]) for i in range(256)}) # index to bytes
+    def __init__(self, special_tokens=[]):
+        # special tokens + byte values (256 possible ones)
+        self.special_tokens = special_tokens
+        self._orig_vocab = {i: tok.encode("utf-8") for i, tok in enumerate(self.special_tokens)}
+        self._orig_vocab.update({i+len(self.special_tokens) : bytes([i]) for i in range(256)}) # index to bytes
         self._vocab = dict(self._orig_vocab)
 
-    def strip_special_tokens(self, text: str):
-        re.split()
+    def strip_special_tokens(self, text: str) -> str:
+        pat = "|".join(self.special_tokens)
+        return ''.join(re.split(pat, text))
+        
+        for tok in self.special_tokens:
+            text = text.replace(tok, '')
+        return text
 
     def pretokenize(self, text : str) -> Iterator[re.Match[str]]:
         # Pretokenizer splits a block of text into smaller chunks
         return re.finditer(PAT, text)
 
-    def _merge(self, indices : list[int], old_pair : tuple[int, int], new_idx : int, words_nbyte : list[int], n_seen : int):
+    def _merge(self, indices : list[int], old_pair : tuple[int, int], new_idx : int, words_nbyte : list[int]):
         new_indices = []
         words_nbyte_cumsum = np.cumsum(words_nbyte)
         new_words_nbyte = [0 for _ in words_nbyte]
@@ -52,33 +56,34 @@ class BPETokenizer(Tokenizer):
                 new_indices.append(indices[i])
                 i += 1
 
-            # print(i, w_num, len(words_nbyte), words_nbyte_cumsum[-1], len(indices))
             new_words_nbyte[w_num] += 1
             w_num += i >= words_nbyte_cumsum[w_num]
         
-        assert n_merged == n_seen
-        print(np.sum(new_words_nbyte), np.sum(words_nbyte) - n_merged)
         assert np.sum(new_words_nbyte) == np.sum(words_nbyte) - n_merged
         return new_indices, new_words_nbyte
 
 
-    def train(self, train_data : str, iters=200):
+    def train(self, train_data : str, vocab_size : int):
         self._vocab = dict(self._orig_vocab)
-        self._train_data = train_data
+        assert len(self._vocab) <= vocab_size, f"len(_vocab) {len(self._vocab)} must be <= vocab_size: {vocab_size}"
+
+        train_data = self.strip_special_tokens(train_data)
         pretokenized_train_data : Iterator[re.Match[str]] = self.pretokenize(train_data)
-        pretokenization_bounds = [d.start() for d in pretokenized_train_data] + [len(self._train_data)]
+        pretokenization_bounds = [d.start() for d in pretokenized_train_data] + [len(train_data)]
+
         # words_nbyte = [len(bytes(train_data[i0:i1].encode())) for i0, i1 in zip(pretokenization_bounds[:-1], pretokenization_bounds[1:])]
-        indices : list[int] = [int(b) + 1 for b in bytes(train_data.encode("utf-8"))] # indices into vocab to lookup byte sequences
+        indices : list[int] = [int(b) + len(self.special_tokens) for b in bytes(train_data.encode("utf-8"))] # indices into vocab to lookup byte sequences
         indices = []
         words_nbyte = []
         for st, end in zip(pretokenization_bounds[:-1], pretokenization_bounds[1:]):
             word = train_data[st : end].encode("utf-8")
-            word_bytes = [int(b) + 1 for b in bytes(word)]
+            word_bytes = [int(b) + len(self.special_tokens) for b in bytes(word)]
             indices.extend(word_bytes)
             words_nbyte.append(len(word_bytes))
 
-        self._merges : dict[tuple[int, int], int] = {} # index1, index2 -> merged index
+        self._merges : dict[tuple[bytes, bytes], int] = {} # token1, token2 -> merged index
 
+        iters = vocab_size - len(self._vocab)
         for i in range(iters):
             pairs = []
             l_cumsum = 0
@@ -92,17 +97,18 @@ class BPETokenizer(Tokenizer):
             pairs_counter = Counter(pairs)
             pair_to_merge, nseen = max(pairs_counter.items(), key=lambda kv : (kv[1], *kv[0])) # sort by count first, then lexigraphical priority
             new_idx = len(self._vocab)
-            self._vocab[new_idx] = self._vocab[pair_to_merge[0]] + self._vocab[pair_to_merge[1]] # byte concatenation
-            self._merges[pair_to_merge] = new_idx
-            indices, words_nbyte = self._merge(indices, pair_to_merge, new_idx, words_nbyte, nseen)
+            bytes1, bytes2 = self._vocab[pair_to_merge[0]], self._vocab[pair_to_merge[1]]
+            self._vocab[new_idx] = bytes1 + bytes2 # byte concatenation
+            self._merges[(bytes1, bytes2)] = new_idx
+            indices, words_nbyte = self._merge(indices, pair_to_merge, new_idx, words_nbyte)
         
     def encode(text : str) -> list[int]:
         ...
 
     def decode(self, tokens : Union[list[int], int]) -> str:
         if isinstance(tokens, (int)):
-            if tokens == 0:
-                return END_OF_TEXT_STR
+            if tokens < len(self.special_tokens):
+                return self.special_tokens[tokens]
             elif tokens < len(self._orig_vocab):
                 return chr(int.from_bytes(self._vocab[tokens]))
             else:
@@ -112,9 +118,10 @@ class BPETokenizer(Tokenizer):
 
 if __name__ == "__main__":
     train_text = "low low low low low lower lower widest widest widest newest newest newest newest newest newest ûÿ"
+    train_text = "000000000"
     # train_text = "low low low low low lower lower widest widest widest newest newest newest newest newest newest"
-    bpe = BPETokenizer()
-    bpe.train(train_text, iters=25)
+    bpe = BPETokenizer(special_tokens=[])
+    bpe.train(train_text, vocab_size=260)
 
     for i in range(250, len(bpe._vocab)):
         print(i, '->', bpe.decode([i]))

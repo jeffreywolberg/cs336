@@ -95,7 +95,11 @@ class BPETokenizer(Tokenizer):
                 return 
             
             pairs_counter = Counter(pairs)
-            pair_to_merge, nseen = max(pairs_counter.items(), key=lambda kv : (kv[1], *kv[0])) # sort by count first, then lexigraphical priority
+            
+            # Either comparison works -- compare directly in bytes (first option) or compare in string (which is just underlied by bytes)
+            pair_to_merge, _ = max(pairs_counter.items(), key=lambda kv : tuple([kv[1], self._vocab[kv[0][0]], self._vocab[kv[0][1]]])) # sort by count first, then lexigraphical priority
+            # pair_to_merge, _ = max(pairs_counter.items(), key=lambda kv : tuple([kv[1], self.decode(kv[0][0]), self.decode(kv[0][1])])) # sort by count first, then lexigraphical priority
+            
             new_idx = len(self._vocab)
             bytes1, bytes2 = self._vocab[pair_to_merge[0]], self._vocab[pair_to_merge[1]]
             self._vocab[new_idx] = bytes1 + bytes2 # byte concatenation

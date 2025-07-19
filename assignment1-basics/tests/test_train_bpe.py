@@ -47,6 +47,7 @@ def test_train_bpe():
             )
             for merge_token_1, merge_token_2 in gpt2_reference_merges
         ]
+
     assert merges == reference_merges
 
     # Compare the vocab to the expected output vocab
@@ -86,3 +87,6 @@ def test_train_bpe_special_tokens(snapshot):
             "merges": merges,
         },
     )
+
+if __name__ == "__main__":
+    test_train_bpe()

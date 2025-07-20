@@ -37,12 +37,12 @@ def linked_list_head() -> TokenNode:
     return PREHEAD_TN.next
 
 class BPETokenizer(Tokenizer):
-    def __init__(self, special_tokens=[]):
+    def __init__(self, special_tokens : list[str] =[]):
         # special tokens + byte values (256 possible ones)
-        self.special_tokens = special_tokens
+        self.special_tokens : list[str] = special_tokens
         self._orig_vocab = {i: tok.encode("utf-8") for i, tok in enumerate(self.special_tokens)}
         self._orig_vocab.update({i+len(self.special_tokens) : bytes([i]) for i in range(256)}) # index to bytes
-        self._vocab = dict(self._orig_vocab)
+        self._vocab : dict[int, bytes] = dict(self._orig_vocab)
         self._merges : dict[tuple[bytes, bytes], int] = {} # (bytes1, bytes2) -> new_vocab_idx
 
     def strip_special_tokens(self, text: str) -> str:
@@ -75,7 +75,6 @@ class BPETokenizer(Tokenizer):
     
     def prepare_token_node_linked_list(self, train_data):
         # pretokenized_train_data : list[str] = self.pretokenize(train_data)
-
         pretokenized_train_data : Iterator[re.Match[str]] = self.pretokenize(train_data)
 
         vocab_idx_to_nodes = defaultdict(list)
@@ -167,6 +166,7 @@ class BPETokenizer(Tokenizer):
         pair_to_pair_info.pop(pair_to_merge)
 
     def train(self, train_data : str, vocab_size : int):
+        PREHEAD_TN.next = None
         self._vocab = dict(self._orig_vocab)
         assert len(self._vocab) <= vocab_size, f"len(_vocab) {len(self._vocab)} must be <= vocab_size: {vocab_size}"
 

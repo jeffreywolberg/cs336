@@ -590,6 +590,7 @@ def run_train_bpe(
     """
     
     from cs336_basics.tokenizer import BPETokenizer
+    # from cs336_basics.tokenizer_slow import BPETokenizer
     bpe = BPETokenizer(special_tokens=special_tokens)
 
     with open(input_path, "r") as f:
@@ -597,6 +598,6 @@ def run_train_bpe(
     
     bpe.train(text, vocab_size)
     vocab : dict[int, bytes] = bpe._vocab
-    merges : list[bytes, bytes] = list(bpe._merges.keys())
+    merges : list[tuple[bytes, bytes]] = list(bpe._merges.keys())
 
     return vocab, merges

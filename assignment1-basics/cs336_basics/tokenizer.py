@@ -4,7 +4,6 @@ from collections import Counter, defaultdict
 from typing import Iterator, Union
 import numpy as np
 from time import time
-from heapdict import heapdict
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""" # pattern
 
@@ -68,26 +67,25 @@ class BPETokenizer(Tokenizer):
         for stok in self.special_tokens:
             assert stok not in train_data
 
-    # def pretokenize(self, text : str) -> Iterator[re.Match[str]]:
-    #     # Pretokenizer splits a block of text into smaller chunks
-    #     return re.finditer(PAT, text)
-
-    def pretokenize(self, text : str) -> list[str]:
+    def pretokenize(self, text : str) -> Iterator[re.Match[str]]:
         # Pretokenizer splits a block of text into smaller chunks
-        toks = re.findall(PAT, text)
-        return toks
+        return re.finditer(PAT, text)
+
+    # def pretokenize(self, text : str) -> list[str]:
+    #     # Pretokenizer splits a block of text into smaller chunks
+    #     toks = re.findall(PAT, text)
+    #     return toks
     
-
-
     def prepare_token_node_linked_list(self, train_data):
-        st1 = time()
-        pretokenized_train_data : list[str] = self.pretokenize(train_data)
-        # pretokenization_bounds = [d.start() for d in pretokenized_train_data] + [len(train_data)]
-        # pr_time(st1, "pretokenization")
+        # pretokenized_train_data : list[str] = self.pretokenize(train_data)
+
+        pretokenized_train_data : Iterator[re.Match[str]] = self.pretokenize(train_data)
 
         vocab_idx_to_nodes = defaultdict(list)
         cur_tn = PREHEAD_TN
-        for word_idx, word in enumerate(pretokenized_train_data):
+        for word in pretokenized_train_data:
+            if isinstance(word, re.Match):
+                word = train_data[word.start() : word.end()]
             byte_stream : list[int] = [b + len(self.special_tokens) for b in word.encode("utf-8")]
             for byte_idx, vocab_idx in enumerate(byte_stream):
                 tn = TokenNode(vocab_idx)
@@ -99,7 +97,7 @@ class BPETokenizer(Tokenizer):
 
         return vocab_idx_to_nodes
     
-    def retrieve_count(self) -> tuple[tuple[int, int], tuple[int, list[TokenNode]]]:
+    def compute_count(self) -> tuple[tuple[int, int], tuple[int, list[TokenNode]]]:
         # (vocab_idx1, vocab_idx2) -> (count, pair_start_nodes)
         pair_to_pair_info : dict[tuple[int, int], tuple[int, list[TokenNode]]] = defaultdict(lambda : [0, []])
         cur_node = linked_list_head()
@@ -116,11 +114,9 @@ class BPETokenizer(Tokenizer):
         if len(pair_to_pair_info) == 0:
             return (None, None), (None, None)
         
-        max_pair_to_pair_info = max(pair_to_pair_info.items(), key = lambda kv : (kv[1][0], self._vocab[kv[0][0]], self._vocab[kv[0][1]])) # sort by frequency of occurence
+        return pair_to_pair_info
 
-        return max_pair_to_pair_info
-
-    def merge(self, pair_st_nodes : list[TokenNode], new_vocab_idx : int):
+    def merge(self, pair_st_nodes : list[TokenNode], new_vocab_idx : int, pair_to_pair_info : dict[tuple[int, int], tuple[int, list[TokenNode]]]):
         if len(pair_st_nodes) == 0:
             return
         
@@ -128,6 +124,9 @@ class BPETokenizer(Tokenizer):
         is_pair_repeated_token = pair_to_merge[0] == pair_to_merge[1]
 
         for i, n in enumerate(pair_st_nodes):
+            assert n.vocab_idx == pair_to_merge[0]
+            assert n.next is not None, f"Pair with start node {n} must have non-none 'next' field"
+            assert n.next.vocab_idx == pair_to_merge[1]
             # Handle case of repeated token that is trying to be merged (e.g. (49, 49))
             # Need to ensure that the pairs start nodes that are merged are not consecutive, otherwise when merging in 
             # e.g. if pair_to_merge is (49, 49) for seq [49, 49, 49, 49, 50, 51], the merge operation should perform 
@@ -139,46 +138,58 @@ class BPETokenizer(Tokenizer):
                     continue
             
             new_node = TokenNode(new_vocab_idx)
+
+            prev_pair = (n.prev.vocab_idx, n.vocab_idx)
+            
+            # edit counts to reflect merge operation below
+            if n.prev.can_pair_forward:
+                pair_to_pair_info[prev_pair][0] -= 1
+                pair_to_pair_info[prev_pair][1].remove(n.prev)
+                
+                new_pair_left = (n.prev.vocab_idx, new_vocab_idx)
+                pair_to_pair_info[new_pair_left][0] += 1
+                pair_to_pair_info[new_pair_left][1].append(n.prev)
+            
+            if n.next.next is not None and n.next.can_pair_forward:
+                next_pair = (n.next.vocab_idx, n.next.next.vocab_idx)
+                pair_to_pair_info[next_pair][0] -= 1
+                pair_to_pair_info[next_pair][1].remove(n.next)
+            
+                new_pair_right = (new_vocab_idx, n.next.next.vocab_idx)
+                pair_to_pair_info[new_pair_right][0] += 1
+                pair_to_pair_info[new_pair_right][1].append(new_node)
+
+            # perform merge
             n.prev.next = new_node
             new_node.prev = n.prev
-            assert n.next is not None, f"Pair with start node {n} must have non-none 'next' field"
             new_node.can_pair_forward = n.next.can_pair_forward
             if n.next.next is not None: # the pair is not at the very end of the list
                 new_node.next = n.next.next
                 new_node.next.prev = new_node
+        
+        pair_to_pair_info.pop(pair_to_merge)
 
     def train(self, train_data : str, vocab_size : int):
         self._vocab = dict(self._orig_vocab)
         assert len(self._vocab) <= vocab_size, f"len(_vocab) {len(self._vocab)} must be <= vocab_size: {vocab_size}"
 
-        # pretokenized_train_data : Iterator[re.Match[str]] = self.pretokenize(train_data)
         train_data = self.strip_special_tokens(train_data)
-        self.assert_special_tokens_removed(train_data)
-        vocab_idx_to_nodes = self.prepare_token_node_linked_list(train_data)
+        self.prepare_token_node_linked_list(train_data)
+        
+        pair_to_pair_info = self.compute_count()
         
         niters = vocab_size - len(self._vocab)
-        el1 = el2 = 0
         for i in range(niters):
-            st1 = time()
+            if len(pair_to_pair_info) == 0:
+                return 
+            
             # tuple[int, int], tuple[int, list[TokenNode]]
-            pair_to_merge, (nseen, nodes) = self.retrieve_count()
-            el1 += time() - st1
-            if pair_to_merge == (None, None):
-                return
-
+            pair_to_merge, (nseen, nodes) = max(pair_to_pair_info.items(), key = lambda kv :  (kv[1][0], self._vocab[kv[0][0]], self._vocab[kv[0][1]])) # sort by frequency of occurence
             assert nseen == len(nodes)
             new_vocab_idx = len(self._vocab)
             self._vocab[new_vocab_idx] = self._vocab[pair_to_merge[0]] + self._vocab[pair_to_merge[1]]
             self._merges[(self._vocab[pair_to_merge[0]], self._vocab[pair_to_merge[1]])] = new_vocab_idx
-            st2 = time()
-            # NOTE: using this merge function does not work, even though I cannot figure out how it is different from correct implementation
-            self.merge(nodes, new_vocab_idx)
-            self.assert_pair_is_removed(pair_to_merge)
-            el2 += time() - st2
-
-        print(f"Counting took {round(el1, 2)} seconds")
-        print(f"Merging took {round(el2, 2)} seconds")
-
+            self.merge(nodes, new_vocab_idx, pair_to_pair_info)
 
     def encode(text : str) -> list[int]:
         ...

@@ -97,12 +97,14 @@ def test_train_bpe_special_tokens(snapshot):
     )
 
 if __name__ == "__main__":
-    # print(f"Testing train_bpe_speed...")
-    # test_train_bpe_speed()
-    # print(f"Successfully tested train_bpe_speed!")
+    print(f"Testing train_bpe_speed...")
+    test_train_bpe_speed()
+    print(f"Successfully tested train_bpe_speed!")
+    
     print(f"Testing train_bpe...")
     test_train_bpe()
     print(f"Successfully tested train_bpe!")
+
     print(f"Testing train_bpe_special_tokens...")
     test_train_bpe_special_tokens()
     print(f"Successfully tested train_bpe_special_tokens!")

@@ -46,12 +46,9 @@ class BPETokenizer(Tokenizer):
         self._merges : dict[tuple[bytes, bytes], int] = {} # (bytes1, bytes2) -> new_vocab_idx
 
     def strip_special_tokens(self, text: str) -> str:
-        pat = "|".join(self.special_tokens)
+        special_tokens = [re.escape(tok) for tok in self.special_tokens]
+        pat = "|".join(special_tokens)
         return ''.join(re.split(pat, text))
-        
-        for tok in self.special_tokens:
-            text = text.replace(tok, '')
-        return text
 
     def assert_pair_is_removed(self, vocab_idxes : tuple[int, int]):
         cur = linked_list_head()
@@ -173,15 +170,18 @@ class BPETokenizer(Tokenizer):
         self._vocab = dict(self._orig_vocab)
         assert len(self._vocab) <= vocab_size, f"len(_vocab) {len(self._vocab)} must be <= vocab_size: {vocab_size}"
 
+        st1 = time()
         train_data = self.strip_special_tokens(train_data)
         self.prepare_token_node_linked_list(train_data)
+        pr_time(st1, "pretokenization + preparing linked list")
         
         pair_to_pair_info = self.compute_count()
         
         niters = vocab_size - len(self._vocab)
+        st2 = time()
         for i in range(niters):
             if len(pair_to_pair_info) == 0:
-                return 
+                break
             
             # tuple[int, int], tuple[int, list[TokenNode]]
             pair_to_merge, (nseen, nodes) = max(pair_to_pair_info.items(), key = lambda kv :  (kv[1][0], self._vocab[kv[0][0]], self._vocab[kv[0][1]])) # sort by frequency of occurence
@@ -190,6 +190,8 @@ class BPETokenizer(Tokenizer):
             self._vocab[new_vocab_idx] = self._vocab[pair_to_merge[0]] + self._vocab[pair_to_merge[1]]
             self._merges[(self._vocab[pair_to_merge[0]], self._vocab[pair_to_merge[1]])] = new_vocab_idx
             self.merge(nodes, new_vocab_idx, pair_to_pair_info)
+        
+        pr_time(st2, f"All {i} merge operations")
 
     def encode(text : str) -> list[int]:
         ...

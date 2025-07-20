@@ -33,9 +33,9 @@ class TokenNode:
     def __repr__(self):
         return f"TokenNode({self.vocab_idx}, prev={id(self.prev) if self.prev is not None else None}, next={id(self.next) if self.next is not None else None}, can_pair_forward={self.can_pair_forward})"
 
-HEAD_TN = TokenNode(-1, can_pair_forward=False)
+PREHEAD_TN = TokenNode(-1, can_pair_forward=False)
 def linked_list_head() -> TokenNode:
-    return HEAD_TN.next
+    return PREHEAD_TN.next
 
 class BPETokenizer(Tokenizer):
     def __init__(self, special_tokens=[]):
@@ -86,7 +86,7 @@ class BPETokenizer(Tokenizer):
         # pr_time(st1, "pretokenization")
 
         vocab_idx_to_nodes = defaultdict(list)
-        cur_tn = HEAD_TN
+        cur_tn = PREHEAD_TN
         for word_idx, word in enumerate(pretokenized_train_data):
             byte_stream : list[int] = [b + len(self.special_tokens) for b in word.encode("utf-8")]
             for byte_idx, vocab_idx in enumerate(byte_stream):

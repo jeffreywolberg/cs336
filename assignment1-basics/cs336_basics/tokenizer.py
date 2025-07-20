@@ -116,38 +116,36 @@ class BPETokenizer(Tokenizer):
         if len(pair_to_pair_info) == 0:
             return (None, None), (None, None)
         
-        return max(pair_to_pair_info.items(), key = lambda kv : (kv[1][0], self._vocab[kv[0][0]], self._vocab[kv[0][1]])) # sort by frequency of occurence
+        max_pair_to_pair_info = max(pair_to_pair_info.items(), key = lambda kv : (kv[1][0], self._vocab[kv[0][0]], self._vocab[kv[0][1]])) # sort by frequency of occurence
 
-    # NOTE: using this merge function does not work, even though I cannot figure out how it is different from correct implementation
-    # def merge(self, nodes_to_edit : list[TokenNode], new_vocab_idx : int):
-    #     for n in nodes_to_edit:
-    #         new_node = TokenNode(new_vocab_idx)
-    #         n.prev.next = new_node
-    #         new_node.prev = n.prev
-    #         assert n.next is not None, f"Pair with start node {n} must have non-none 'next' field"
-    #         new_node.can_pair_forward = n.next.can_pair_forward
-    #         if n.next.next is not None: # the pair is not at the very end of the list
-    #             new_node.next = n.next.next
-    #             new_node.next.prev = new_node
+        return max_pair_to_pair_info
 
-    def merge(self, pair_to_merge : tuple[int, int], new_vocab_idx : int):
-        n = linked_list_head()
-        i = 0
-        while n.next is not None:
-            if (n.vocab_idx, n.next.vocab_idx) == pair_to_merge and n.can_pair_forward:
-                new_node = TokenNode(new_vocab_idx)
-                n.prev.next = new_node
-                new_node.prev = n.prev
-                assert n.next is not None, f"Pair with start node {n} must have non-none 'next' field"
-                new_node.can_pair_forward = n.next.can_pair_forward
-                if n.next.next is not None: # the pair is not at the very end of the list
-                    new_node.next = n.next.next
-                    new_node.next.prev = new_node
-                n = new_node.next
-            else:
-                n = n.next
-            i += 1
+    def merge(self, pair_st_nodes : list[TokenNode], new_vocab_idx : int):
+        if len(pair_st_nodes) == 0:
+            return
+        
+        pair_to_merge = (pair_st_nodes[0].vocab_idx,  pair_st_nodes[0].next.vocab_idx)
+        is_pair_repeated_token = pair_to_merge[0] == pair_to_merge[1]
 
+        for i, n in enumerate(pair_st_nodes):
+            # Handle case of repeated token that is trying to be merged (e.g. (49, 49))
+            # Need to ensure that the pairs start nodes that are merged are not consecutive, otherwise when merging in 
+            # e.g. if pair_to_merge is (49, 49) for seq [49, 49, 49, 49, 50, 51], the merge operation should perform 
+            # two merges, one on node at idx0 and one at node at idx2. Need to skip merging at idx 1 and 3, since they will be deleted.
+            if is_pair_repeated_token:
+                is_prev_editable = i > 0 and pair_st_nodes[i-1] == n.prev
+                is_dprev_editable = i > 1 and pair_st_nodes[i-2] == n.prev.prev
+                if is_prev_editable and not is_dprev_editable:
+                    continue
+            
+            new_node = TokenNode(new_vocab_idx)
+            n.prev.next = new_node
+            new_node.prev = n.prev
+            assert n.next is not None, f"Pair with start node {n} must have non-none 'next' field"
+            new_node.can_pair_forward = n.next.can_pair_forward
+            if n.next.next is not None: # the pair is not at the very end of the list
+                new_node.next = n.next.next
+                new_node.next.prev = new_node
 
     def train(self, train_data : str, vocab_size : int):
         self._vocab = dict(self._orig_vocab)
@@ -164,22 +162,17 @@ class BPETokenizer(Tokenizer):
             st1 = time()
             # tuple[int, int], tuple[int, list[TokenNode]]
             pair_to_merge, (nseen, nodes) = self.retrieve_count()
-            # print(pair_to_merge, nseen)
+            el1 += time() - st1
             if pair_to_merge == (None, None):
                 return
-            # el1 += time() - st1
-            # st1 = time()
-            # # pair_to_merge : tuple[int, int] = next(iter(pair_to_info.keys()))
-            # pair_to_merge : tuple[int, int] = list(pair_to_info.keys())[0]
-            # nseen, nodes = pair_to_info.pop(pair_to_merge)
+
             assert nseen == len(nodes)
             new_vocab_idx = len(self._vocab)
             self._vocab[new_vocab_idx] = self._vocab[pair_to_merge[0]] + self._vocab[pair_to_merge[1]]
             self._merges[(self._vocab[pair_to_merge[0]], self._vocab[pair_to_merge[1]])] = new_vocab_idx
             st2 = time()
             # NOTE: using this merge function does not work, even though I cannot figure out how it is different from correct implementation
-            # self.merge(nodes, new_vocab_idx)
-            self.merge(pair_to_merge, new_vocab_idx)
+            self.merge(nodes, new_vocab_idx)
             self.assert_pair_is_removed(pair_to_merge)
             el2 += time() - st2
 

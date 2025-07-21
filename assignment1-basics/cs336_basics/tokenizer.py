@@ -45,20 +45,19 @@ class BPETokenizer(Tokenizer):
         self._vocab : dict[int, bytes] = dict(self._orig_vocab)
         self._merges : dict[tuple[bytes, bytes], int] = {} # (bytes1, bytes2) -> new_vocab_idx
 
-    def strip_special_tokens(self, text: str) -> str:
+    def split_on_special_tokens(self, text: str) -> list[str]:
         special_tokens = [re.escape(tok) for tok in self.special_tokens]
         pat = "|".join(special_tokens)
-        return ''.join(re.split(pat, text))
+        chunks = re.split(pat, text)
+        return chunks
 
     def assert_pair_is_removed(self, vocab_idxes : tuple[int, int]):
         cur = linked_list_head()
         i = 0
         while cur.next is not None:
-            # print(cur)
             assert (cur.vocab_idx, cur.next.vocab_idx) != vocab_idxes, f"On token {i}, pair {vocab_idxes} was found in nodes {cur, cur.next}"
             cur = cur.next
             i += 1
-        # print(cur)
 
     def assert_special_tokens_removed(self, train_data : str):
         for stok in self.special_tokens:
@@ -73,23 +72,24 @@ class BPETokenizer(Tokenizer):
     #     toks = re.findall(PAT, text)
     #     return toks
     
-    def prepare_token_node_linked_list(self, train_data):
-        # pretokenized_train_data : list[str] = self.pretokenize(train_data)
-        pretokenized_train_data : Iterator[re.Match[str]] = self.pretokenize(train_data)
+    def prepare_token_node_linked_list(self, train_data_string : str):
+        train_data_list = self.split_on_special_tokens(train_data_string)
 
         vocab_idx_to_nodes = defaultdict(list)
         cur_tn = PREHEAD_TN
-        for word in pretokenized_train_data:
-            if isinstance(word, re.Match):
-                word = train_data[word.start() : word.end()]
-            byte_stream : list[int] = [b + len(self.special_tokens) for b in word.encode("utf-8")]
-            for byte_idx, vocab_idx in enumerate(byte_stream):
-                tn = TokenNode(vocab_idx)
-                vocab_idx_to_nodes[vocab_idx].append(tn)
-                cur_tn.next = tn
-                tn.prev = cur_tn
-                tn.can_pair_forward = byte_idx != len(byte_stream) - 1 # last byte of each pretokenized word cannot be paired with next
-                cur_tn = tn
+        for train_data in train_data_list:
+            pretokenized_train_data : Iterator[re.Match] = self.pretokenize(train_data)
+            for word in pretokenized_train_data:
+                if isinstance(word, re.Match):
+                    word = train_data[word.start() : word.end()]
+                vocab_stream : list[int] = [b + len(self.special_tokens) for b in word.encode("utf-8")]
+                for byte_idx, vocab_idx in enumerate(vocab_stream):
+                    tn = TokenNode(vocab_idx)
+                    vocab_idx_to_nodes[vocab_idx].append(tn)
+                    cur_tn.next = tn
+                    tn.prev = cur_tn
+                    tn.can_pair_forward = byte_idx != len(vocab_stream) - 1 # last byte of each pretokenized word cannot be paired with next
+                    cur_tn = tn
 
         return vocab_idx_to_nodes
     
@@ -97,15 +97,12 @@ class BPETokenizer(Tokenizer):
         # (vocab_idx1, vocab_idx2) -> (count, pair_start_nodes)
         pair_to_pair_info : dict[tuple[int, int], tuple[int, list[TokenNode]]] = defaultdict(lambda : [0, []])
         cur_node = linked_list_head()
-        i = 1
         while cur_node.next is not None:
             if cur_node.can_pair_forward:
                 pair = (cur_node.vocab_idx, cur_node.next.vocab_idx)
                 pair_to_pair_info[pair][0] += 1
                 pair_to_pair_info[pair][1].append(cur_node)
             cur_node = cur_node.next
-            i += 1
-        # print(f"Counted {i+1} total tokens in sequence")
 
         if len(pair_to_pair_info) == 0:
             return (None, None), (None, None)
@@ -171,7 +168,6 @@ class BPETokenizer(Tokenizer):
         assert len(self._vocab) <= vocab_size, f"len(_vocab) {len(self._vocab)} must be <= vocab_size: {vocab_size}"
 
         st1 = time()
-        train_data = self.strip_special_tokens(train_data)
         self.prepare_token_node_linked_list(train_data)
         pr_time(st1, "pretokenization + preparing linked list")
         
@@ -184,7 +180,7 @@ class BPETokenizer(Tokenizer):
                 break
             
             # tuple[int, int], tuple[int, list[TokenNode]]
-            pair_to_merge, (nseen, nodes) = max(pair_to_pair_info.items(), key = lambda kv :  (kv[1][0], self._vocab[kv[0][0]], self._vocab[kv[0][1]])) # sort by frequency of occurence
+            pair_to_merge, (nseen, nodes) = max(pair_to_pair_info.items(), key = lambda kv :  (kv[1][0], self._vocab[kv[0][0]], self._vocab[kv[0][1]])) # sort by frequency of occurence, then lexigraphical greatness
             assert nseen == len(nodes)
             new_vocab_idx = len(self._vocab)
             self._vocab[new_vocab_idx] = self._vocab[pair_to_merge[0]] + self._vocab[pair_to_merge[1]]

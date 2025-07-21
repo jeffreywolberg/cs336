@@ -5,6 +5,7 @@ from typing import BinaryIO, Iterator, Union
 import numpy as np
 from time import time
 import multiprocessing
+from tqdm import tqdm
 
 from .pretokenization_example import find_chunk_boundaries
 
@@ -90,19 +91,18 @@ class BPETokenizer(Tokenizer):
 
         return [re.finditer(PAT, chunk) for chunk in chunks] # can use findall but all memory is needed at once
 
-    def prepare_token_node_linked_list(self, input_path : str, num_procs=4):
-        if num_procs > 1:
+    def prepare_token_node_linked_list(self, input_path : str, num_processes_pretokenizer=8):
+        if num_processes_pretokenizer > 1:
             with open(input_path, "rb") as f:
-                chunk_boundaries = find_chunk_boundaries(f, num_procs, "<|endoftext|>".encode("utf-8"))
+                chunk_boundaries = find_chunk_boundaries(f, num_processes_pretokenizer*4, "<|endoftext|>".encode("utf-8"))
 
-            with multiprocessing.Pool(num_procs) as p:
+            with multiprocessing.Pool(num_processes_pretokenizer) as p:
                 func_args = [(input_path, st, end) for st, end in zip(chunk_boundaries[:-1], chunk_boundaries[1:])]
                 pretokenized_train_data_list = p.map(self._pretokenization_worker, func_args)
                 pretokenized_train_data_list = [data for worker_result in pretokenized_train_data_list for data in worker_result]
         else:
             pretokenized_train_data_list = self.pretokenize(input_path)
         
-        vocab_idx_to_nodes = defaultdict(list)
         cur_tn = PREHEAD_TN
         for i, pretokenized_train_data in enumerate(pretokenized_train_data_list):
             for word in pretokenized_train_data:
@@ -111,14 +111,11 @@ class BPETokenizer(Tokenizer):
                 vocab_stream : list[int] = [b + len(self.special_tokens) for b in word.encode("utf-8")]
                 for byte_idx, vocab_idx in enumerate(vocab_stream):
                     tn = TokenNode(vocab_idx)
-                    vocab_idx_to_nodes[vocab_idx].append(tn)
                     cur_tn.next = tn
                     tn.prev = cur_tn
                     tn.can_pair_forward = byte_idx != len(vocab_stream) - 1 # last byte of each pretokenized word cannot be paired with next
                     cur_tn = tn
 
-        return vocab_idx_to_nodes
-    
     def compute_count(self) -> tuple[tuple[int, int], tuple[int, list[TokenNode]]]:
         # (vocab_idx1, vocab_idx2) -> (count, pair_start_nodes)
         pair_to_pair_info : dict[tuple[int, int], tuple[int, list[TokenNode]]] = defaultdict(lambda : [0, []])
@@ -188,20 +185,20 @@ class BPETokenizer(Tokenizer):
         
         pair_to_pair_info.pop(pair_to_merge)
 
-    def train(self, input_path : str, vocab_size : int):
+    def train(self, input_path : str, vocab_size : int, num_processes_pretokenizer=8):
         PREHEAD_TN.next = None
         self._vocab = dict(self._orig_vocab)
         assert len(self._vocab) <= vocab_size, f"len(_vocab) {len(self._vocab)} must be <= vocab_size: {vocab_size}"
 
         st1 = time()
-        self.prepare_token_node_linked_list(input_path)
+        self.prepare_token_node_linked_list(input_path, num_processes_pretokenizer=num_processes_pretokenizer)
         pr_time(st1, "pretokenization + preparing linked list")
         
         pair_to_pair_info = self.compute_count()
         
         niters = vocab_size - len(self._vocab)
         st2 = time()
-        for i in range(niters):
+        for i in tqdm(range(niters)):
             if len(pair_to_pair_info) == 0:
                 break
             

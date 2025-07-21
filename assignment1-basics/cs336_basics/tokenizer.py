@@ -1,9 +1,12 @@
 from abc import ABC
 import regex as re
 from collections import Counter, defaultdict
-from typing import Iterator, Union
+from typing import BinaryIO, Iterator, Union
 import numpy as np
 from time import time
+import multiprocessing
+
+from .pretokenization_example import find_chunk_boundaries
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""" # pattern
 
@@ -46,10 +49,13 @@ class BPETokenizer(Tokenizer):
         self._merges : dict[tuple[bytes, bytes], int] = {} # (bytes1, bytes2) -> new_vocab_idx
 
     def split_on_special_tokens(self, text: str) -> list[str]:
-        special_tokens = [re.escape(tok) for tok in self.special_tokens]
-        pat = "|".join(special_tokens)
-        chunks = re.split(pat, text)
-        return chunks
+        if len(self.special_tokens) == 0:
+            return [text]
+        else:
+            special_tokens = [re.escape(tok) for tok in self.special_tokens]
+            pat = "|".join(special_tokens)
+            chunks = re.split(pat, text)
+            return chunks
 
     def assert_pair_is_removed(self, vocab_idxes : tuple[int, int]):
         cur = linked_list_head()
@@ -63,25 +69,45 @@ class BPETokenizer(Tokenizer):
         for stok in self.special_tokens:
             assert stok not in train_data
 
-    def pretokenize(self, text : str) -> Iterator[re.Match[str]]:
+    def _pretokenization_worker(self, args : tuple) -> list[str]:
+        input_path : str; st : int; end : int
+        input_path, st, end = args
+
+        with open(input_path, "rb") as f:
+            f.seek(st)
+            chunk : str = f.read(end - st).decode("utf-8", errors="ignore")
+
+        chunk_list = self.split_on_special_tokens(chunk)
+        # use findall and not finditer since multiprocessing canont pickle _regex.Scanner object returned from finditer 
+        return [re.findall(PAT, chunk) for chunk in chunk_list]
+
+    def pretokenize(self, input_path : str) -> list[Iterator[re.Match[str]]]:
         # Pretokenizer splits a block of text into smaller chunks
-        return re.finditer(PAT, text)
+        with open(input_path, "r") as f:
+            text = f.read()
 
-    # def pretokenize(self, text : str) -> list[str]:
-    #     # Pretokenizer splits a block of text into smaller chunks
-    #     toks = re.findall(PAT, text)
-    #     return toks
-    
-    def prepare_token_node_linked_list(self, train_data_string : str):
-        train_data_list = self.split_on_special_tokens(train_data_string)
+        chunks = self.split_on_special_tokens(text)
 
+        return [re.finditer(PAT, chunk) for chunk in chunks] # can use findall but all memory is needed at once
+
+    def prepare_token_node_linked_list(self, input_path : str, num_procs=4):
+        if num_procs > 1:
+            with open(input_path, "rb") as f:
+                chunk_boundaries = find_chunk_boundaries(f, num_procs, "<|endoftext|>".encode("utf-8"))
+
+            with multiprocessing.Pool(num_procs) as p:
+                func_args = [(input_path, st, end) for st, end in zip(chunk_boundaries[:-1], chunk_boundaries[1:])]
+                pretokenized_train_data_list = p.map(self._pretokenization_worker, func_args)
+                pretokenized_train_data_list = [data for worker_result in pretokenized_train_data_list for data in worker_result]
+        else:
+            pretokenized_train_data_list = self.pretokenize(input_path)
+        
         vocab_idx_to_nodes = defaultdict(list)
         cur_tn = PREHEAD_TN
-        for train_data in train_data_list:
-            pretokenized_train_data : Iterator[re.Match] = self.pretokenize(train_data)
+        for i, pretokenized_train_data in enumerate(pretokenized_train_data_list):
             for word in pretokenized_train_data:
                 if isinstance(word, re.Match):
-                    word = train_data[word.start() : word.end()]
+                    word = word.group()
                 vocab_stream : list[int] = [b + len(self.special_tokens) for b in word.encode("utf-8")]
                 for byte_idx, vocab_idx in enumerate(vocab_stream):
                     tn = TokenNode(vocab_idx)
@@ -162,13 +188,13 @@ class BPETokenizer(Tokenizer):
         
         pair_to_pair_info.pop(pair_to_merge)
 
-    def train(self, train_data : str, vocab_size : int):
+    def train(self, input_path : str, vocab_size : int):
         PREHEAD_TN.next = None
         self._vocab = dict(self._orig_vocab)
         assert len(self._vocab) <= vocab_size, f"len(_vocab) {len(self._vocab)} must be <= vocab_size: {vocab_size}"
 
         st1 = time()
-        self.prepare_token_node_linked_list(train_data)
+        self.prepare_token_node_linked_list(input_path)
         pr_time(st1, "pretokenization + preparing linked list")
         
         pair_to_pair_info = self.compute_count()
@@ -204,13 +230,12 @@ class BPETokenizer(Tokenizer):
             return ''.join([self.decode(c) for c in tokens])
 
 if __name__ == "__main__":
-    train_text = "low low low low low lower lower widest widest widest newest newest newest newest newest newest ûÿ"
-    # train_text = "000000000"
-    # train_text = "low low low low low lower lower widest widest widest newest newest newest newest newest newest"
+    test_filepath = "/Users/jeffreywolberg/Coding/cs336/assignment1-basics/data/test_training_data.txt"
+
     bpe = BPETokenizer(special_tokens=[])
-    bpe.train(train_text, vocab_size=275)
+    bpe.train(test_filepath, vocab_size=275)
 
     for i in range(250, len(bpe._vocab)):
         print(i, '->', bpe.decode([i]), "\t", len(bpe.decode([i])))
 
-    print(bpe._merges[:7])
+    print(bpe._merges)

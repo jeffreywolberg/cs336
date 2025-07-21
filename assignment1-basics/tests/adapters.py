@@ -596,7 +596,7 @@ def run_train_bpe(
     with open(input_path, "r") as f:
         text = f.read()
     
-    bpe.train(text, vocab_size)
+    bpe.train(input_path, vocab_size)
     vocab : dict[int, bytes] = bpe._vocab
     merges : list[tuple[bytes, bytes]] = list(bpe._merges.keys())
 

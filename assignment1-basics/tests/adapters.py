@@ -593,11 +593,19 @@ def run_train_bpe(
     # from cs336_basics.tokenizer_slow import BPETokenizer
     bpe = BPETokenizer(special_tokens=special_tokens)
 
-    with open(input_path, "r") as f:
-        text = f.read()
-    
     bpe.train(input_path, vocab_size, num_processes_pretokenizer=1)
     vocab : dict[int, bytes] = bpe._vocab
     merges : list[tuple[bytes, bytes]] = list(bpe._merges.keys())
 
     return vocab, merges
+
+if __name__ == "__main__":
+    text = "0000"
+    input_path = "tmp.txt"
+    with open(input_path, 'w') as f:
+        f.write(text)
+
+    special_tokens = ["<|endoftext|>"]
+    from cs336_basics.tokenizer import BPETokenizer
+    bpe = BPETokenizer(special_tokens)
+    bpe.train(input_path, vocab_size=260, num_processes_pretokenizer=1)

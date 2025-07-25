@@ -116,15 +116,15 @@ class BPETokenizer(Tokenizer):
                     tn.can_pair_forward = byte_idx != len(vocab_stream) - 1 # last byte of each pretokenized word cannot be paired with next
                     cur_tn = tn
 
-    def compute_count(self) -> tuple[tuple[int, int], tuple[int, list[TokenNode]]]:
+    def compute_count(self) -> tuple[tuple[int, int], tuple[int, set[TokenNode]]]:
         # (vocab_idx1, vocab_idx2) -> (count, pair_start_nodes)
-        pair_to_pair_info : dict[tuple[int, int], tuple[int, list[TokenNode]]] = defaultdict(lambda : [0, []])
+        pair_to_pair_info : dict[tuple[int, int], tuple[int, set[TokenNode]]] = defaultdict(lambda : [0, set()])
         cur_node = linked_list_head()
         while cur_node.next is not None:
             if cur_node.can_pair_forward:
                 pair = (cur_node.vocab_idx, cur_node.next.vocab_idx)
                 pair_to_pair_info[pair][0] += 1
-                pair_to_pair_info[pair][1].append(cur_node)
+                pair_to_pair_info[pair][1].add(cur_node)
             cur_node = cur_node.next
 
         if len(pair_to_pair_info) == 0:
@@ -132,26 +132,14 @@ class BPETokenizer(Tokenizer):
         
         return pair_to_pair_info
 
-    def merge(self, pair_st_nodes : list[TokenNode], new_vocab_idx : int, pair_to_pair_info : dict[tuple[int, int], tuple[int, list[TokenNode]]]):
+    def merge(self, pair_to_merge : tuple[int, int], pair_st_nodes : list[TokenNode], new_vocab_idx : int, pair_to_pair_info : dict[tuple[int, int], tuple[int, set[TokenNode]]]):
         if len(pair_st_nodes) == 0:
             return
         
-        pair_to_merge = (pair_st_nodes[0].vocab_idx,  pair_st_nodes[0].next.vocab_idx)
-        is_pair_repeated_token = pair_to_merge[0] == pair_to_merge[1]
-
         for i, n in enumerate(pair_st_nodes):
             assert n.vocab_idx == pair_to_merge[0]
             assert n.next is not None, f"Pair with start node {n} must have non-none 'next' field"
             assert n.next.vocab_idx == pair_to_merge[1]
-            # Handle case of repeated token that is trying to be merged (e.g. (49, 49))
-            # Need to ensure that the pairs start nodes that are merged are not consecutive, otherwise when merging in 
-            # e.g. if pair_to_merge is (49, 49) for seq [49, 49, 49, 49, 50, 51], the merge operation should perform 
-            # two merges, one on node at idx0 and one at node at idx2. Need to skip merging at idx 1 and 3, since they will be deleted.
-            if is_pair_repeated_token:
-                is_prev_editable = i > 0 and pair_st_nodes[i-1] == n.prev
-                is_dprev_editable = i > 1 and pair_st_nodes[i-2] == n.prev.prev
-                if is_prev_editable and not is_dprev_editable:
-                    continue
             
             new_node = TokenNode(new_vocab_idx)
 
@@ -160,20 +148,20 @@ class BPETokenizer(Tokenizer):
             # edit counts to reflect merge operation below
             if n.prev.can_pair_forward:
                 pair_to_pair_info[prev_pair][0] -= 1
-                pair_to_pair_info[prev_pair][1].remove(n.prev)
+                pair_to_pair_info[prev_pair][1].discard(n.prev)
                 
                 new_pair_left = (n.prev.vocab_idx, new_vocab_idx)
                 pair_to_pair_info[new_pair_left][0] += 1
-                pair_to_pair_info[new_pair_left][1].append(n.prev)
+                pair_to_pair_info[new_pair_left][1].add(n.prev)
             
             if n.next.next is not None and n.next.can_pair_forward:
                 next_pair = (n.next.vocab_idx, n.next.next.vocab_idx)
                 pair_to_pair_info[next_pair][0] -= 1
-                pair_to_pair_info[next_pair][1].remove(n.next)
+                pair_to_pair_info[next_pair][1].discard(n.next)
             
                 new_pair_right = (new_vocab_idx, n.next.next.vocab_idx)
                 pair_to_pair_info[new_pair_right][0] += 1
-                pair_to_pair_info[new_pair_right][1].append(new_node)
+                pair_to_pair_info[new_pair_right][1].add(new_node)
 
             # perform merge
             n.prev.next = new_node
@@ -185,6 +173,46 @@ class BPETokenizer(Tokenizer):
         
         pair_to_pair_info.pop(pair_to_merge)
 
+    def remove_overlapping_nodes(self, pair_st_nodes : set[TokenNode], pair_to_merge : tuple[int, int]):
+        # Handle case of repeated token that is trying to be merged (e.g. (49, 49))
+        # Need to ensure that the pairs start nodes that are merged are not consecutive, otherwise when merging in 
+        # e.g. if pair_to_merge is (49, 49) for seq [49, 49, 49, 49, 50, 51], the merge operation should perform 
+        # two merges, one on node at idx0 and one at node at idx2. Need to skip merging at idx 1 and 3, since they will be deleted.
+        vidx0, vidx1 = pair_to_merge       
+        if vidx0 != vidx1:
+            return len(pair_st_nodes), pair_st_nodes
+        else:
+            # assert all([n.can_pair_forward for n in pair_st_nodes])
+            non_overlapping_nodes = set()
+            seen_nodes = set()
+            
+            for n in pair_st_nodes:
+                if n in seen_nodes:
+                    continue
+                chain_back, chain_forward = [], []
+                cur_n = n.prev
+                while cur_n is not None and cur_n.vocab_idx == vidx0 and cur_n in pair_st_nodes:
+                    chain_back.append(cur_n)
+                    seen_nodes.add(cur_n)
+                    cur_n = cur_n.prev
+                cur_n = n.next
+                while cur_n.next is not None and cur_n.next.vocab_idx == vidx0 and cur_n.next in pair_st_nodes:
+                    chain_forward.append(cur_n)
+                    seen_nodes.add(cur_n)
+                    cur_n = cur_n.next
+                
+                chain = chain_back[::-1] + [n] + chain_forward
+
+                non_overlapping_nodes.update(chain[::2])
+
+            # print(f"{len(pair_st_nodes)} -> {len(non_overlapping_nodes)}")
+            assert len(non_overlapping_nodes) <= len(pair_st_nodes)
+            return [len(non_overlapping_nodes), non_overlapping_nodes]
+            # is_prev_editable = i > 0 and pair_st_nodes[i-1] == n.prev
+            # is_dprev_editable = i > 1 and pair_st_nodes[i-2] == n.prev.prev
+            # if is_prev_editable and not is_dprev_editable:
+            #     continue
+
     def train(self, input_path : str, vocab_size : int, num_processes_pretokenizer=8):
         PREHEAD_TN.next = None
         self._vocab = dict(self._orig_vocab)
@@ -193,6 +221,11 @@ class BPETokenizer(Tokenizer):
         st1 = time()
         self.prepare_token_node_linked_list(input_path, num_processes_pretokenizer=num_processes_pretokenizer)
         pr_time(st1, "pretokenization + preparing linked list")
+
+        # cur_n = PREHEAD_TN.next
+        # while cur_n is not None:
+            # print(cur_n)
+            # cur_n = cur_n.next
         
         pair_to_pair_info = self.compute_count()
         
@@ -202,13 +235,14 @@ class BPETokenizer(Tokenizer):
             if len(pair_to_pair_info) == 0:
                 break
             
-            # tuple[int, int], tuple[int, list[TokenNode]]
-            pair_to_merge, (nseen, nodes) = max(pair_to_pair_info.items(), key = lambda kv :  (kv[1][0], self._vocab[kv[0][0]], self._vocab[kv[0][1]])) # sort by frequency of occurence, then lexigraphical greatness
-            assert nseen == len(nodes)
+            # tuple[int, int], tuple[int, set[TokenNode]]
+            pair_to_merge, (nseen, pair_st_nodes) = max(pair_to_pair_info.items(), key = lambda kv :  (kv[1][0], self._vocab[kv[0][0]], self._vocab[kv[0][1]])) # sort by frequency of occurence, then lexigraphical greatness
+            pair_to_pair_info[pair_to_merge] = self.remove_overlapping_nodes(pair_st_nodes, pair_to_merge)
+            pair_st_nodes = pair_to_pair_info[pair_to_merge][1]
             new_vocab_idx = len(self._vocab)
             self._vocab[new_vocab_idx] = self._vocab[pair_to_merge[0]] + self._vocab[pair_to_merge[1]]
             self._merges[(self._vocab[pair_to_merge[0]], self._vocab[pair_to_merge[1]])] = new_vocab_idx
-            self.merge(nodes, new_vocab_idx, pair_to_pair_info)
+            self.merge(pair_to_merge, pair_st_nodes, new_vocab_idx, pair_to_pair_info)
         
         pr_time(st2, f"All {i} merge operations")
 

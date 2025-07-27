@@ -181,9 +181,12 @@ def test_ascii_string_matches_tiktoken():
 
     reference_ids = reference_tokenizer.encode(test_string)
     ids = tokenizer.encode(test_string)
+    # print(ids, reference_ids)
     # assert ids == reference_ids
 
     tokenized_string = [tokenizer.decode([x]) for x in ids]
+    # print(tokenized_string)
+    # quit()
     assert tokenized_string == ["Hello", ",", " how", " are", " you", "?"]
 
     assert tokenizer.decode(ids) == test_string
@@ -222,7 +225,9 @@ def test_roundtrip_unicode_string_with_special_tokens():
     )
     test_string = "Héllò hôw <|endoftext|><|endoftext|> are ü? 🙃<|endoftext|>"
     encoded_ids = tokenizer.encode(test_string)
+    print(encoded_ids)
     tokenized_string = [tokenizer.decode([x]) for x in encoded_ids]
+
     # Ensure the special <|endoftext|> token is preserved
     assert tokenized_string.count("<|endoftext|>") == 3
 
@@ -462,3 +467,19 @@ def _encode(tokenizer, text):
     for just this function. We set the memory limit to 1MB.
     """
     return tokenizer.encode(text)
+
+def basic_encode_test():
+    vocab = {0: b' ', 1: b'a', 2: b'c', 3: b'e', 4: b'h', 5: b't', 6: b'th', 7: b' c', 8: b' a', 9: b'the', 10: b' at'}
+    merges = {(b't', b'h'): 6, (b' ', b'c'): 7, (b' ', b'a'): 8, (b'th', b'e'): 9, (b' a', b't'): 10}
+    from cs336_basics.tokenizer import BPETokenizer
+    bpe = BPETokenizer.from_trained_tokenizer(vocab, merges)
+    text = "the cat ate"
+    toks = bpe.encode(text)
+    
+    assert toks == [9, 7, 1, 5, 10, 3]
+
+
+# if __name__ == "__main__":
+    # test_roundtrip_unicode_string_with_special_tokens()
+    # test_ascii_string_matches_tiktoken()
+    # basic_encode_test()

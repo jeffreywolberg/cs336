@@ -2,11 +2,12 @@ from abc import ABC
 from array import array
 import regex as re
 from collections import Counter, defaultdict
-from typing import BinaryIO, Iterator, Union
+from typing import BinaryIO, Iterable, Iterator, Union
 import numpy as np
 from time import time
 import multiprocessing
 from tqdm import tqdm
+import pickle
 
 from .pretokenization_example import find_chunk_boundaries
 
@@ -16,10 +17,11 @@ L16_MASK = 0x0000ffff
 U16_MASK = ~L16_MASK
 
 # need to pull this out because lambda functions are not picklable
+def _return_zero():
+    return 0
+
 def _packed_pair_to_word_info_init_func():
-    def _init_func():
-        return 0
-    return defaultdict(_init_func)
+    return defaultdict(_return_zero)
 
 def pr_time(st : float, name=""):
     print(f"{name} took {round(time() - st, 3)} seconds")
@@ -65,6 +67,27 @@ class BPETokenizer(Tokenizer):
         self._packed_pair_to_word_info : dict[np.uint32, dict[np.uint16, int]] = defaultdict(_packed_pair_to_word_info_init_func)
         self._words : list[Word] = []
 
+    @classmethod
+    def from_trained_tokenizer(cls, vocab : dict[int, bytes], merges : dict[tuple[bytes, bytes], int], special_tokens=[]):
+        obj = cls(special_tokens)
+        obj._vocab = vocab
+        obj._merges = merges
+        return obj
+    
+    @classmethod
+    def from_trained_tokenizer_files(cls, vocab_filepath : str, merges_filepath : str, special_tokens=[]):
+        obj = cls(special_tokens)
+        
+        with open(vocab_filepath, 'rb') as f:
+            vocab = pickle.load(f)
+        with open(merges_filepath, 'rb') as f:
+            merges = pickle.load(f)
+        
+        obj._vocab = vocab
+        obj._merges = merges
+
+        return obj
+
     def split_on_special_tokens(self, text: str) -> list[str]:
         if len(self.special_tokens) == 0:
             return [text]
@@ -78,6 +101,11 @@ class BPETokenizer(Tokenizer):
         for stok in self.special_tokens:
             assert stok not in train_data
 
+    def _pretokenize_text(self, text, find_func=re.findall):
+        chunks = self.split_on_special_tokens(text)
+
+        return [find_func(PAT, chunk) for chunk in chunks] # can use findall but all memory is needed at once
+
     def _pretokenization_worker(self, args : tuple) -> list[str]:
         input_path : str; st : int; end : int
         input_path, st, end = args
@@ -85,21 +113,18 @@ class BPETokenizer(Tokenizer):
         with open(input_path, "rb") as f:
             f.seek(st)
             chunk : str = f.read(end - st).decode("utf-8", errors="ignore")
-
-        chunk_list = self.split_on_special_tokens(chunk)
+        
         # use findall and not finditer since multiprocessing canont pickle _regex.Scanner object returned from finditer 
-        return [re.findall(PAT, chunk) for chunk in chunk_list]
+        return self._pretokenize_text(chunk, find_func = re.findall)
 
     def pretokenize(self, input_path : str) -> list[Iterator[re.Match[str]]]:
         # Pretokenizer splits a block of text into smaller chunks
         with open(input_path, "r") as f:
             text = f.read()
 
-        chunks = self.split_on_special_tokens(text)
+        return self._pretokenize_text(text, find_func = re.finditer)
 
-        return [re.finditer(PAT, chunk) for chunk in chunks] # can use findall but all memory is needed at once
-
-    def index_corpus(self, input_path : str, num_processes_pretokenizer=8):
+    def do_pretokenization(self, input_path : str, num_processes_pretokenizer : int = 1):
         st1 = time()
         if num_processes_pretokenizer > 1:
             with open(input_path, "rb") as f:
@@ -113,11 +138,17 @@ class BPETokenizer(Tokenizer):
             pretokenized_train_data_list = self.pretokenize(input_path)
         pr_time(st1, f"pretokenization")
 
+        return pretokenized_train_data_list
+    
+    def index_corpus(self, input_path : str, num_processes_pretokenizer=8):
+        pretokenized_train_data_list = self.do_pretokenization(input_path, num_processes_pretokenizer)
+
         st2 = time()
 
         _word_id_to_word_idx : dict[tuple[int], int]= {}
            
-        for pretokenized_train_data in tqdm(pretokenized_train_data_list, desc="linked list init"):
+        # for pretokenized_train_data in tqdm(pretokenized_train_data_list, desc="linked list init"):
+        for pretokenized_train_data in pretokenized_train_data_list:
             for word in pretokenized_train_data:
                 if isinstance(word, re.Match):
                     word = word.group()
@@ -136,7 +167,7 @@ class BPETokenizer(Tokenizer):
                         self._packed_pair_to_word_info[packed_pair][word_idx] += 1
     
         del _word_id_to_word_idx
-        pr_time(st2, "linked list init")
+        # pr_time(st2, "linked list init")
 
 
     def merge(self, packed_pair : np.uint32, new_vocab_idx : np.uint16):
@@ -219,7 +250,8 @@ class BPETokenizer(Tokenizer):
         
         niters = vocab_size - len(self._vocab)
         st2 = time()
-        for i in tqdm(range(niters)):
+        # for i in tqdm(range(niters)):
+        for i in range(niters):
             if len(self._packed_pair_to_word_info) == 0:
                 break
 
@@ -238,19 +270,70 @@ class BPETokenizer(Tokenizer):
         
         pr_time(st2, f"All {i} merge operations")
 
-    def encode(text : str) -> list[int]:
-        ...
+    def encode_iterable(self, iterable : Iterable[str]) -> Iterator[int]:
+        for s in iterable:
+            toks = self.encode(s)
+            yield from toks
 
-    def decode(self, tokens : Union[list[int], int]) -> str:
-        if isinstance(tokens, (int)):
-            if tokens < len(self.special_tokens):
-                return self.special_tokens[tokens]
-            elif tokens < len(self._orig_vocab):
-                return chr(int.from_bytes(self._vocab[tokens]))
-            else:
-                return self._vocab[tokens].decode("utf-8")
-        else:
-            return ''.join([self.decode(c) for c in tokens])
+    def encode(self, text : str) -> list[int]:
+        _inverse_vocab : dict[bytes, int]  = {v : k for k, v in self._vocab.items()}
+        pretokenized_data_list = self._pretokenize_text(text)
+        toks_list = []
+
+        # print(f"len vocab: {len(self._vocab)}")
+        # print(f"len merges: {len(self._merges)}")
+        # for pretokenized_train_data in tqdm(pretokenized_data_list, desc="linked list init"):
+        # print(pretokenized_data_list)
+        special_tokens_sorted_by_len = sorted(self.special_tokens, key=lambda k : len(k), reverse=True)
+        pos_in_text = 0 
+        for p_iter, pretokenized_data in enumerate(pretokenized_data_list):
+            # print(pretokenized_data)
+            for word in pretokenized_data:
+                if isinstance(word, re.Match):
+                    word = word.group()
+                word : list[bytes] = [bytes([b]) for b in word.encode('utf-8')]
+                # print(f"starting word: {word}")
+                for i, (merge, vocab_idx) in enumerate(self._merges.items()):
+                    # print(f"merge: {merge}")
+                    # if merge == (b'H', b'el') or merge == (b'H', b'ello') or merge == (b'el', b'lo') or merge == (b'Hel', b'lo') or merge == (b'l', b'l'):
+                        # print(f"{i}) {merge}, vocab_idx: {vocab_idx}")
+                    try:
+                        pos1 = word.index(merge[0])
+                    except ValueError:
+                        continue
+                    try:
+                        pos2 = word.index(merge[1], pos1+1)
+                    except ValueError:
+                        continue
+                    if pos1 + 1 == pos2:
+                        # print(f"merge {i}: {merge}")
+                        merged_bytes = self._vocab[vocab_idx]
+                        word = [*word[:pos1], merged_bytes, *word[pos2+1:]]
+                        # print(f"concatenated word: {word}")
+                        # no more merges can be applied
+                        if len(word) == 1:
+                            break
+                # print(f"final word: {word}")
+
+                toks = [_inverse_vocab[bytes_chunk] for bytes_chunk in word]   
+                toks_list.extend(toks)
+
+            pos_in_text += sum([len(w) for w in pretokenized_data])
+            if p_iter < len(pretokenized_data_list) - 1:
+                for st in special_tokens_sorted_by_len:
+                    if text[pos_in_text:pos_in_text+len(st)] == st:
+                        toks_list.append(_inverse_vocab[st.encode('utf-8')])
+                        pos_in_text += len(st)
+                        break
+
+        return toks_list
+
+    def decode(self, tokens : list[int]) -> str:
+        seq = [self._vocab[tok] for tok in tokens]
+        seq = b''.join(seq)
+        return bytes.decode(seq, errors='replace')
+
+        
 
 if __name__ == "__main__":
     test_filepath = "/Users/jeffreywolberg/Coding/cs336/assignment1-basics/data/test_training_data.txt"

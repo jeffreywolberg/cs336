@@ -65,7 +65,8 @@ class BPETokenizer(Tokenizer):
         self._vocab : dict[int, bytes] = dict(self._orig_vocab)
         self._merges : dict[tuple[bytes, bytes], int] = {} # (bytes1, bytes2) -> new_vocab_idx
 
-        self._packed_pair_to_word_idxes : dict[np.uint32, list[int]] = defaultdict(list)
+        # packed pair to (word_idx -> n_times_pair_in_word)
+        self._packed_pair_to_word_info : dict[np.uint32, dict[np.uint16, int]] = defaultdict(lambda : defaultdict(lambda : 0))
         self._words : list[Word] = []
 
     def split_on_special_tokens(self, text: str) -> list[str]:
@@ -136,24 +137,23 @@ class BPETokenizer(Tokenizer):
                     self._words.append(Word(toks, count=1))
                     for tok1, tok2 in zip(toks[:-1], toks[1:]):
                         packed_pair = pack_pair(tok1, tok2)
-                        self._packed_pair_to_word_idxes[packed_pair].append(word_idx)
+                        self._packed_pair_to_word_info[packed_pair][word_idx] += 1
     
+        del _word_id_to_word_idx
         pr_time(st2, "linked list init")
 
-    def compute_count(self) -> dict[np.uint32, int]:
-        st3 = time()
-        count = defaultdict(lambda : 0)
-        count.update({packed_pair : sum([self._words[i].count for i in word_idxes]) for packed_pair, word_idxes in self._packed_pair_to_word_idxes.items()})
-        pr_time(st3, "compute_count")
-        return count
+    # def compute_count(self) -> dict[np.uint32, int]:
+    #     st3 = time()
+    #     count = defaultdict(lambda : 0)
+    #     count.update({packed_pair : sum([self._words[w_idx].count for w_idx in word_info]) for packed_pair, word_info in self._packed_pair_to_word_info.items()})
+    #     pr_time(st3, "compute_count")
+    #     return count
     
-    def merge(self, packed_pair : np.uint32, new_vocab_idx : np.uint16, packed_pair_to_count : dict[np.uint32, int]):
-        word_idxes = self._packed_pair_to_word_idxes[packed_pair]
-        n_repeat_pair_in_word = Counter(word_idxes) # how many times does the packed pair appear in each word
-        unique_word_indices = list(n_repeat_pair_in_word.keys())
+    def merge(self, packed_pair : np.uint32, new_vocab_idx : np.uint16):
+        word_idx_to_n_repeat_pair = self._packed_pair_to_word_info[packed_pair]
+        unique_word_indices = list(word_idx_to_n_repeat_pair.keys())
         # print([self._words[i] for i in  word_idxes])
         p1, p2 = unpack_pair(packed_pair)
-        # print(packed_pair_to_count[packed_pair])
         n_total_edits = 0
         for w_idx in unique_word_indices:
             word = self._words[w_idx]
@@ -179,28 +179,39 @@ class BPETokenizer(Tokenizer):
                     i += 1
             assert len(new_toks) + n_edits_in_word == len(word.toks), f"{len(new_toks)} + {n_edits_in_word} != {len(word.toks)}, tok_st_idxes_to_edit: {tok_st_idxes_to_edit}"
 
+            # print(p1, p2)
             # print(tok_st_idxes_to_edit)
             # print(word, word.toks)
             pair_to_count_inc = defaultdict(lambda : 0)
-            for i in tok_st_idxes_to_edit:
-                prev_pair = None if i == 0 else (word.toks[i-1], word.toks[i])
-                next_pair = None if i == len(word.toks) - 2 else (word.toks[i+1], word.toks[i+2])
+
+            # TODO: the for loop operates on stale info, need to compute prev and next pairs based on merged info
+            for i, idx_to_edit in enumerate(tok_st_idxes_to_edit):
+                prev_pair = None if idx_to_edit == 0 else (word.toks[idx_to_edit-1], word.toks[idx_to_edit])
+                next_pair = None if idx_to_edit == len(word.toks) - 2 else (word.toks[idx_to_edit+1], word.toks[idx_to_edit+2])
                 if prev_pair is not None:
                     pair_to_count_inc[prev_pair] -= 1
-                    pair_to_count_inc[(word.toks[i-1], new_vocab_idx)] += 1
-                    self._packed_pair_to_word_idxes[pack_pair(word.toks[i-1], new_vocab_idx)].extend([w_idx] * n_repeat_pair_in_word[w_idx])
-                if next_pair is not None:
+                    pair_to_count_inc[(word.toks[idx_to_edit-1], new_vocab_idx)] += 1
+                    # self._packed_pair_to_word_info[pack_pair(word.toks[idx_to_edit-1], new_vocab_idx)][w_idx] += word_idx_to_n_repeat_pair[w_idx]
+                if next_pair is not None and (i == len(tok_st_idxes_to_edit) - 1 or tok_st_idxes_to_edit[i+1] != idx_to_edit + 2):
                     pair_to_count_inc[next_pair] -= 1
-                    pair_to_count_inc[(new_vocab_idx, word.toks[i+2])] += 1
-                    self._packed_pair_to_word_idxes[pack_pair(new_vocab_idx, word.toks[i+2])].extend([w_idx] * n_repeat_pair_in_word[w_idx])
+                    pair_to_count_inc[(new_vocab_idx, word.toks[idx_to_edit+2])] += 1
+                    # self._packed_pair_to_word_info[pack_pair(new_vocab_idx, word.toks[idx_to_edit+2])][w_idx] += word_idx_to_n_repeat_pair[w_idx]
 
             for pair, count in pair_to_count_inc.items():
-                packed_pair_to_count[pack_pair(*pair)] += count * word.count * n_repeat_pair_in_word[w_idx]
+                packed_p = pack_pair(*pair)
+                # print(pair, count, word.count, self._words[w_idx], self._packed_pair_to_word_info[packed_p][w_idx])
+                self._packed_pair_to_word_info[packed_p][w_idx] += count
+                
+                if self._packed_pair_to_word_info[packed_p][w_idx] == 0:
+                    self._packed_pair_to_word_info[packed_p].pop(w_idx)
+                else:
+                    # print(pair, count, word.count, self._words[w_idx], self._packed_pair_to_word_info[packed_p][w_idx])
+                    assert self._packed_pair_to_word_info[packed_p][w_idx] > 0
 
             word.toks = new_toks
-            n_total_edits += n_edits_in_word * n_repeat_pair_in_word[w_idx]
+            n_total_edits += n_edits_in_word #  * word_idx_to_n_repeat_pair[w_idx]
 
-        packed_pair_to_count.pop(packed_pair) # remove count since all instances were replaced
+        self._packed_pair_to_word_info.pop(packed_pair) # remove count since all instances were replaced
 
     def train(self, input_path : str, vocab_size : int, num_processes_pretokenizer=8):
         self._vocab = dict(self._orig_vocab)
@@ -210,30 +221,30 @@ class BPETokenizer(Tokenizer):
         self.index_corpus(input_path, num_processes_pretokenizer=num_processes_pretokenizer)
         pr_time(st1, "indexing corpus")
 
-        packed_pair_to_count = self.compute_count()
-
-        def packed_pair_to_count_cmp(packed_pair_count_item):
+        # packed_pair -> (word_idx, count_pair_in_word)
+        def packed_pair_to_word_info_cmp(packed_pair_count_item : tuple[np.uint32, dict[np.uint16, int]]):
             p1, p2 = unpack_pair(packed_pair_count_item[0])
-            count = packed_pair_count_item[1]
+            count = sum([self._words[w_idx].count * nrepeat for w_idx, nrepeat in packed_pair_count_item[1].items()])
             return (count, self._vocab[p1], self._vocab[p2])
         
         niters = vocab_size - len(self._vocab)
         st2 = time()
         for i in tqdm(range(niters)):
-            if len(packed_pair_to_count) == 0:
+            if len(self._packed_pair_to_word_info) == 0:
                 break
 
-            packed_pair, count = max(packed_pair_to_count.items(), key = packed_pair_to_count_cmp) # sort by frequency of occurence, then lexigraphical greatness
+            packed_pair, _ = max(self._packed_pair_to_word_info.items(), key = packed_pair_to_word_info_cmp) # sort by frequency of occurence, then lexigraphical greatness
             p1, p2 = unpack_pair(packed_pair)
+            # print(p1, p2)
             new_vocab_idx = len(self._vocab)
-            print(f"({p1}, {p2}) -> {new_vocab_idx}: {Word([p1]), Word([p2])}, {count}")
+            # print(f"({p1}, {p2}) -> {new_vocab_idx}: {Word([p1]), Word([p2])}, {count}")
 
-            for w_idx in self._packed_pair_to_word_idxes[packed_pair]:
+            for w_idx in self._packed_pair_to_word_info[packed_pair]:
                 assert (p1, p2) in [(_p1, _p2) for (_p1, _p2) in zip(self._words[w_idx].toks[:-1], self._words[w_idx].toks[1:])], f"word: {self._words[w_idx]}, word.toks: {self._words[w_idx].toks}"
                 
             self._vocab[new_vocab_idx] = self._vocab[p1] + self._vocab[p2]
             self._merges[(self._vocab[p1], self._vocab[p2])] = new_vocab_idx
-            self.merge(packed_pair, new_vocab_idx, packed_pair_to_count)
+            self.merge(packed_pair, new_vocab_idx)
         
         pr_time(st2, f"All {i} merge operations")
 

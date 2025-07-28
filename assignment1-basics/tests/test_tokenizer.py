@@ -290,6 +290,7 @@ def test_address_matches_tiktoken():
         corpus_contents = f.read()
     reference_ids = reference_tokenizer.encode(corpus_contents)
     ids = tokenizer.encode(corpus_contents)
+
     assert ids == reference_ids
 
     assert tokenizer.decode(ids) == corpus_contents
@@ -479,7 +480,9 @@ def basic_encode_test():
     assert toks == [9, 7, 1, 5, 10, 3]
 
 
-# if __name__ == "__main__":
+if __name__ == "__main__":
+    test_address_matches_tiktoken()
+    # test_overlapping_special_tokens()
     # test_roundtrip_unicode_string_with_special_tokens()
     # test_ascii_string_matches_tiktoken()
     # basic_encode_test()

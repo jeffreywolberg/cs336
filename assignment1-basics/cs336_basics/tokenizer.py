@@ -275,6 +275,14 @@ class BPETokenizer(Tokenizer):
             toks = self.encode(s)
             yield from toks
 
+    def _apply_merge(self, word: list[bytes], merge: tuple[bytes]) -> tuple[list[bytes], bool]:
+        # Scans `word` for the first adjacent [merge[0], merge[1]] pair, replaces it with a single merged token, and returns (new_word, True). If no adjacent pair is found, returns (word, False).
+
+        for i in range(len(word) - 1):
+            if word[i] == merge[0] and word[i + 1] == merge[1]:
+                return [*word[:i], merge[0] + merge[1], *word[i + 2 :]], True
+        return word, False
+
     def encode(self, text : str) -> list[int]:
         _inverse_vocab : dict[bytes, int]  = {v : k for k, v in self._vocab.items()}
         pretokenized_data_list = self._pretokenize_text(text)
@@ -294,26 +302,12 @@ class BPETokenizer(Tokenizer):
                 word : list[bytes] = [bytes([b]) for b in word.encode('utf-8')]
                 # print(f"starting word: {word}")
                 for i, (merge, vocab_idx) in enumerate(self._merges.items()):
-                    # print(f"merge: {merge}")
-                    # if merge == (b'H', b'el') or merge == (b'H', b'ello') or merge == (b'el', b'lo') or merge == (b'Hel', b'lo') or merge == (b'l', b'l'):
-                        # print(f"{i}) {merge}, vocab_idx: {vocab_idx}")
-                    try:
-                        pos1 = word.index(merge[0])
-                    except ValueError:
-                        continue
-                    try:
-                        pos2 = word.index(merge[1], pos1+1)
-                    except ValueError:
-                        continue
-                    if pos1 + 1 == pos2:
-                        # print(f"merge {i}: {merge}")
-                        merged_bytes = self._vocab[vocab_idx]
-                        word = [*word[:pos1], merged_bytes, *word[pos2+1:]]
-                        # print(f"concatenated word: {word}")
-                        # no more merges can be applied
-                        if len(word) == 1:
-                            break
-                # print(f"final word: {word}")
+                    changed = True
+                    while changed and len(word) > 1:
+                        word, changed = self._apply_merge(word, merge)
+                        # if changed:
+                            # print(f"{i}) applied {merge, len(a), len(b)} -> {vocab_idx}, word={word}")
+                # print(f"ending word: {word}")
 
                 toks = [_inverse_vocab[bytes_chunk] for bytes_chunk in word]   
                 toks_list.extend(toks)

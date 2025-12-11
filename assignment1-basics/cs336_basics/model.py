@@ -11,12 +11,12 @@ class Linear(nn.Module):
         self.device = device
         self.dtype = dtype
 
-        self.W = nn.Parameter(torch.empty((self.out_features, self.in_features), device=self.device, dtype=self.dtype))
+        self.weight = nn.Parameter(torch.empty((self.out_features, self.in_features), device=self.device, dtype=self.dtype))
         std = math.sqrt(2/(self.in_features + self.out_features))
-        nn.init.trunc_normal_(self.W, 0, std=std, a=-3*std, b=3*std)
+        nn.init.trunc_normal_(self.weight, 0, std=std, a=-3*std, b=3*std)
 
     def forward(self, x: torch.Tensor):
-        return einx.dot("out in, b ... in -> b ... out", self.W, x)
+        return einx.dot("out in, b ... in -> b ... out", self.weight, x)
         
 class Embedding(nn.Module):
     def __init__(self, num_embeddings, embedding_dim, device=None, dtype=None):
@@ -26,14 +26,14 @@ class Embedding(nn.Module):
         self.device = device
         self.dtype = dtype
 
-        self.W = nn.Parameter(torch.empty((self.num_embeddings, self.embedding_dim), device=self.device, dtype=self.dtype))
+        self.weight = nn.Parameter(torch.empty((self.num_embeddings, self.embedding_dim), device=self.device, dtype=self.dtype))
         std = 1
-        nn.init.trunc_normal_(self.W, 0, std=std, a=-3*std, b=3*std)
+        nn.init.trunc_normal_(self.weight, 0, std=std, a=-3*std, b=3*std)
 
 
     def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
         # (batch_size, sequence_length)
-        return self.W[token_ids]
+        return self.weight[token_ids]
 
 class RMSNorm(nn.Module):
     def __init__(self, d_model: int, eps: float = 1e-5, device=None, dtype=None):
@@ -54,3 +54,22 @@ class RMSNorm(nn.Module):
         result = self.weight * x / rms_norm
 
         return result.to(in_dtype)
+
+class SwiGLUFNN(nn.Module):
+    def __init__(self, d_model : int, d_ff : int, device=None, dtype=None):
+        super().__init__()
+        self.d_model = d_model
+        self.d_ff = d_ff
+        self.device = device
+        self.dtype = dtype
+        self.w1 = Linear(self.d_model, self.d_ff, device=self.device, dtype=self.dtype)
+        self.w2 = Linear(self.d_ff, self.d_model, device=self.device, dtype=self.dtype)
+        self.w3 = Linear(self.d_model, self.d_ff, device=self.device, dtype=self.dtype)
+
+    def SiLU(self, x : torch.Tensor):
+        # x is B, S, D
+        return x * torch.sigmoid(x)
+
+    def forward(self, x : torch.Tensor) -> torch.Tensor:
+        # x is B, S, D
+        return self.w2(self.SiLU(self.w1(x)) * self.w3(x))

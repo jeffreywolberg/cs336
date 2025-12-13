@@ -83,17 +83,32 @@ class RotaryPositionalEmbedding(nn.Module):
         self.device = device
 
         K = self.d_k // 2
-        thetas = torch.arange(self.max_seq_len)[:, None] / (self.theta ** (2 * torch.arange(K)[None, :] / self.d_k))
-        c, s = torch.cos(thetas), torch.sin(thetas)
-        Rs = torch.stack([torch.stack([c, -s]), torch.stack([s, c])]) # 2x2xSxK
+        thetas = torch.arange(self.max_seq_len)[:, None] / (self.theta ** (2 * torch.arange(K)[None, :] / self.d_k)) # S, K
+        self.c, self.s = torch.cos(thetas), torch.sin(thetas)
 
-        R = torch.zeros((self.max_seq_len, self.d_k, self.d_k))
-        for i in range(len(self.max_seq_len)):
-            rots = Rs[:, :, i, :].permute(2, 0, 1) # Kx2x2
-            R[i] = torch.block_diag(*rots) # DxD
-        self.register_buffer('R', R, persistent=False)
+        # Rs = torch.stack([torch.stack([self.c, -self.s]), torch.stack([self.s, self.c])]) # 2x2xSxK
+        # R = torch.zeros((self.max_seq_len, self.d_k, self.d_k))
+        # for i in range(self.max_seq_len):
+        #     rots = Rs[:, :, i, :].permute(2, 0, 1) # Kx2x2
+        #     R[i] = torch.block_diag(*rots) # DxD
+        # self.register_buffer('R', R, persistent=False)
     
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor) -> torch.Tensor:
         # x (..., seq_len, d_k)
         # token_positions (..., seq_len)
-        pass
+        
+        # S, K
+        c, s = self.c[token_positions], self.s[token_positions]
+        # B, S, K
+        x0 = x[..., ::2]
+        x1 = x[..., 1::2]
+
+        out = torch.zeros_like(x) # B, S, D
+
+        # Both methods work
+        # out[..., ::2] = einx.dot('B S K, S K -> B S K', x0, c) + einx.dot('B S K, S K -> B S K', x1, -s)
+        # out[..., 1::2] = einx.dot('B S K, S K -> B S K', x0, s) + einx.dot('B S K, S K -> B S K', x1, c)
+        out[..., ::2] = x0 * c + x1 * -s
+        out[..., 1::2] = x0 * s + x1 * c
+        
+        return out

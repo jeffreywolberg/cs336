@@ -73,3 +73,27 @@ class SwiGLUFNN(nn.Module):
     def forward(self, x : torch.Tensor) -> torch.Tensor:
         # x is B, S, D
         return self.w2(self.SiLU(self.w1(x)) * self.w3(x))
+
+class RotaryPositionalEmbedding(nn.Module):
+    def __init__(self, theta: float, d_k: int, max_seq_len: int, device=None):
+        super().__init__()
+        self.theta = theta
+        self.d_k = d_k
+        self.max_seq_len = max_seq_len
+        self.device = device
+
+        K = self.d_k // 2
+        thetas = torch.arange(self.max_seq_len)[:, None] / (self.theta ** (2 * torch.arange(K)[None, :] / self.d_k))
+        c, s = torch.cos(thetas), torch.sin(thetas)
+        Rs = torch.stack([torch.stack([c, -s]), torch.stack([s, c])]) # 2x2xSxK
+
+        R = torch.zeros((self.max_seq_len, self.d_k, self.d_k))
+        for i in range(len(self.max_seq_len)):
+            rots = Rs[:, :, i, :].permute(2, 0, 1) # Kx2x2
+            R[i] = torch.block_diag(*rots) # DxD
+        self.register_buffer('R', R, persistent=False)
+    
+    def forward(self, x: torch.Tensor, token_positions: torch.Tensor) -> torch.Tensor:
+        # x (..., seq_len, d_k)
+        # token_positions (..., seq_len)
+        pass

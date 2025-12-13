@@ -10,7 +10,7 @@ import torch
 from torch import Tensor
 
 from cs336_basics.tokenizer import BPETokenizer
-from cs336_basics.model import Embedding, Linear, MultiheadSelfAttention, RotaryPositionalEmbedding, SwiGLUFNN, RMSNorm, scaled_dot_product_attention, softmax
+from cs336_basics.model import Embedding, Linear, MultiheadSelfAttention, RotaryPositionalEmbedding, SwiGLUFNN, RMSNorm, TransformerBlock, TransformerLM, scaled_dot_product_attention, softmax
 
 def run_linear(
     d_in: int,
@@ -152,7 +152,7 @@ def run_multihead_self_attention(
     model.q_proj.weight.data = q_proj_weight
     model.k_proj.weight.data = k_proj_weight
     model.v_proj.weight.data = v_proj_weight
-    model.o_proj.weight.data = o_proj_weight
+    model.output_proj.weight.data = o_proj_weight
     
     return model(in_features)
 
@@ -202,7 +202,7 @@ def run_multihead_self_attention_with_rope(
     model.q_proj.weight.data = q_proj_weight
     model.k_proj.weight.data = k_proj_weight
     model.v_proj.weight.data = v_proj_weight
-    model.o_proj.weight.data = o_proj_weight
+    model.output_proj.weight.data = o_proj_weight
     
     return model(in_features, token_positions = token_positions)
 
@@ -300,7 +300,11 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
+    
+    model = TransformerBlock(d_model, num_heads, d_ff, theta, max_seq_len)
+    model.load_state_dict(weights)
+
+    return model(in_features)
 
 
 def run_transformer_lm(
@@ -382,7 +386,12 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
-    raise NotImplementedError
+
+    model = TransformerLM(vocab_size, context_length, d_model, num_layers, num_heads, d_ff, rope_theta)
+    model.load_state_dict(weights)
+    
+    return model(in_indices)
+    
 
 
 def run_rmsnorm(

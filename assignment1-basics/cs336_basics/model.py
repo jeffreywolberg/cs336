@@ -53,7 +53,7 @@ class RMSNorm(nn.Module):
         in_dtype = x.dtype
         x = x.to(torch.float32)
 
-        rms_norm = (1/math.sqrt(self.d_model)) * torch.sqrt( einx.sum('b s [d] -> b s 1', torch.square(x)) + self.eps)
+        rms_norm = torch.sqrt(1 / self.d_model * einx.sum('b s [d] -> b s 1', torch.square(x)) + self.eps)
         
         result = self.weight * x / rms_norm
 
@@ -187,7 +187,7 @@ class MultiheadSelfAttention(nn.Module):
         self.q_proj = Linear(self.d_model, self.num_heads * self.d_k)
         self.k_proj = Linear(self.d_model, self.num_heads * self.d_k)
         self.v_proj = Linear(self.d_model, self.num_heads * self.d_v)
-        self.o_proj = Linear(self.num_heads * self.d_v, self.d_model)
+        self.output_proj = Linear(self.num_heads * self.d_v, self.d_model)
 
     def forward(self, in_features : torch.Tensor, token_positions : Optional[torch.Tensor] = None):
         """
@@ -219,9 +219,64 @@ class MultiheadSelfAttention(nn.Module):
 
         multihead_output = torch.concat(head_outs, dim=2) # B S (d_v*num_heads)
 
-        # print(f"self.o_proj.weight.shape: {self.o_proj.weight.shape}")
+        # print(f"self.output_proj.weight.shape: {self.output_proj.weight.shape}")
         # print(f"multihead_output.shape: {multihead_output.shape}")
-        out_proj = einx.dot('DModel [DProj], B S [DProj] -> B S DModel', self.o_proj.weight, multihead_output)
+        out_proj = einx.dot('DModel [DProj], B S [DProj] -> B S DModel', self.output_proj.weight, multihead_output)
         # print(f"out_proj.shape: {out_proj.shape}")
 
         return out_proj
+
+class TransformerBlock(nn.Module):
+    def __init__(self, d_model : int, num_heads : int, d_ff : int, theta : float, max_seq_len : int):
+        super().__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_ff = d_ff
+        self.theta = theta
+        self.max_seq_len = max_seq_len
+
+        self.ln1 = RMSNorm(self.d_model)
+        self.ln2 = RMSNorm(self.d_model)
+
+        self.rope = RotaryPositionalEmbedding(theta, self.d_model//self.num_heads, self.max_seq_len)
+
+        self.attn = MultiheadSelfAttention(self.d_model, self.num_heads, self.rope)
+
+        self.ffn = SwiGLUFNN(self.d_model, self.d_ff)
+
+    def forward(self, x : torch.Tensor):
+        # x (B, S, d)
+        B, S, _ = x.shape
+        token_positions = torch.arange(0, S)[None].tile((B, 1))
+        x += self.attn(self.ln1(x), token_positions)
+        x += self.ffn(self.ln2(x))
+
+        return x
+
+class TransformerLM(nn.Module):
+    def __init__(self, vocab_size : int, context_length : int, d_model : int, num_layers : int, num_heads : int, d_ff : int, rope_theta : float) -> None:
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.context_length = context_length
+        self.d_model = d_model
+        self.num_layers = num_layers
+        self.num_heads = num_heads
+        self.d_ff = d_ff
+        self.rope_theta = rope_theta
+
+        self.token_embeddings = Embedding(self.vocab_size, self.d_model)
+        layers = [TransformerBlock(self.d_model, self.num_heads, self.d_ff, self.rope_theta, self.context_length) for i in range(self.num_layers)]
+        self.layers = nn.Sequential(*layers)
+        self.ln_final = RMSNorm(self.d_model)
+        self.lm_head = Linear(self.d_model, self.vocab_size)
+
+    
+    def forward(self, tokens : torch.Tensor):
+        x = self.token_embeddings(tokens)
+        for transformer_layer in self.layers:
+            x = transformer_layer(x)
+        x = self.ln_final(x)
+        x = self.lm_head(x)
+
+        return x
+

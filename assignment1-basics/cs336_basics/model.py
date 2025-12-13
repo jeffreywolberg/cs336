@@ -118,3 +118,32 @@ def softmax(x : torch.Tensor, dim : int):
     x_shifted = x - max_val
     x_shifted_exp = torch.exp(x_shifted)
     return x_shifted_exp / torch.sum(x_shifted_exp, dim=dim, keepdim=True)
+
+def scaled_dot_product_attention(keys : torch.Tensor, queries : torch.Tensor, values : torch.Tensor, mask=None):
+    # keys (B, ..., S, d_k)
+    # queries (B, ..., S, d_k)
+    # values (B, ..., S, d_v)
+    # mask = Optional[(B, ..., S, S)]
+
+    
+    if len(keys.shape) == 3:
+        keys = keys[:, None, ...]
+        queries = queries[:, None, ...]
+        values = values[:, None, ...]
+        mask = mask[:, None, ...]
+        is_3d = True
+    else:
+        is_3d = False
+
+    qk_prod = einx.dot('B h Sq [d_k], B h Sk [d_k] -> B h Sq Sk', queries, keys)
+    if mask is not None:
+        qk_prod += torch.where(mask, 0.0, -torch.inf)
+    d_k = keys.shape[-1]
+    attention_vals = softmax(qk_prod / math.sqrt(d_k), dim=3)
+    output = einx.dot('B h Sq [Sk], B h [Sk] d_v -> B h Sq d_v', attention_vals, values)
+
+    if is_3d:
+        output = output.squeeze(1)
+
+    return output
+

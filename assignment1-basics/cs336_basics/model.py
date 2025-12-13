@@ -1,4 +1,5 @@
 import math
+from typing import Optional
 import einx
 import torch
 import torch.nn as nn
@@ -147,3 +148,49 @@ def scaled_dot_product_attention(keys : torch.Tensor, queries : torch.Tensor, va
 
     return output
 
+class MultiheadSelfAttention(nn.Module):
+    def __init__(self, d_model : int, num_heads : int, rope : Optional[RotaryPositionalEmbedding] = None) -> None:
+        super().__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.rope = rope if rope is not None else lambda x, y: x
+
+        self.d_k = self.d_model // self.num_heads
+        self.d_v = self.d_k
+
+        self.q_proj = Linear(self.d_model, self.num_heads * self.d_k)
+        self.k_proj = Linear(self.d_model, self.num_heads * self.d_k)
+        self.v_proj = Linear(self.d_model, self.num_heads * self.d_v)
+        self.o_proj = Linear(self.num_heads * self.d_v, self.d_model)
+
+    def forward(self, in_features : torch.Tensor, token_positions : Optional[torch.Tensor] = None):
+        # in_features (... sequence_length d_out)
+        head_outs = []
+
+        B, S, d_out = in_features.shape
+        assert d_out == self.d_model
+
+        keys = einx.dot('Dproj [Dmodel], B S [Dmodel] -> B S Dproj', self.k_proj.weight, in_features)
+        queries = einx.dot('Dproj [Dmodel], B S [Dmodel] -> B S Dproj', self.q_proj.weight, in_features)
+        values = einx.dot('Dproj [Dmodel], B S [Dmodel] -> B S Dproj', self.v_proj.weight, in_features)
+        # print(f"keys.shape: {keys.shape}, queries.shape: {queries.shape}, values.shape: {values.shape}")
+        mask = torch.tril(torch.ones((B, S, S), dtype=torch.bool))
+
+        for i in range(self.num_heads):
+            keys_slice = self.rope(keys[..., i*self.d_k:(i+1)*self.d_k], token_positions)
+            queries_slice = self.rope(queries[..., i*self.d_k:(i+1)*self.d_k], token_positions)
+            values_slice = values[..., i*self.d_v:(i+1)*self.d_v]
+            # print(f"keys_slice.shape: {keys_slice.shape}, queries_slice.sh_sliceape: {queries_slice.shape}, values_slice.shape: {values_slice.shape}")
+            # B S d_v
+            head_out = scaled_dot_product_attention(keys_slice, queries_slice, values_slice, mask=mask)
+            # print(f"head_out.shape: {head_out.shape}")
+            head_outs.append(head_out)
+
+        multihead_output = torch.concat(head_outs, dim=2) # B S d_model
+
+        # print(f"self.o_proj.weight.shape: {self.o_proj.weight.shape}")
+        # print(f"multihead_output.shape: {multihead_output.shape}")
+        out_proj = einx.dot('DModel [DProj], B S [DProj] -> B S DModel', self.o_proj.weight, multihead_output)
+        # print(f"out_proj.shape: {out_proj.shape}")
+
+        return out_proj

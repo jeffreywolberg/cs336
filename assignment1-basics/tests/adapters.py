@@ -10,7 +10,7 @@ import torch
 from torch import Tensor
 
 from cs336_basics.loss import CrossEntropy
-from cs336_basics.opt import AdamW
+from cs336_basics.opt import AdamW, get_lr_with_cosine_sched
 from cs336_basics.tokenizer import BPETokenizer
 from cs336_basics.model import Embedding, Linear, MultiheadSelfAttention, RotaryPositionalEmbedding, SwiGLUFNN, RMSNorm, TransformerBlock, TransformerLM, scaled_dot_product_attention, softmax
 
@@ -611,7 +611,8 @@ def run_get_lr_cosine_schedule(
     Returns:
         Learning rate at the given iteration under the specified schedule.
     """
-    raise NotImplementedError
+    
+    return get_lr_with_cosine_sched(it, max_learning_rate, min_learning_rate, warmup_iters, cosine_cycle_iters)
 
 
 def run_save_checkpoint(

@@ -104,3 +104,5 @@ d)
 As model gets bigger, the attn block uses more FLOPS, since d_ff remains the same.
 
 e) When context length increases, the FLOPS of the ffn within the transformer block goes from 72% to 45%, since attn starts to dominate due to its context_length**2 time complexity. Attn uses 40% of FLOPS with context length = 16,384.
+
+4)a) for every param in the model, you need to store 5 things: (param value, param grad, and m, v, t from adamw). The computation for memory usage of activations is separate, and follows 3b.

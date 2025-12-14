@@ -1,10 +1,16 @@
 import argparse
+import os
+from os.path import join, basename, exists, splitext
 
 from pydantic import BaseModel, Field
 
-TOTAL_TOKENS_PROCESSED = 327680000
+from cs336_basics.tokenizer import BPETokenizer
 
-class TrainHyperparameters(BaseModel):
+CACHE_DIR = "data/cache"
+TOKENIZER_CACHE_DIR = join(CACHE_DIR, "tokenizer")
+TOKENIZER_SPECIAL_TOKENS = ["<|endoftext|>"]
+
+class TrainConfig(BaseModel):
     vocab_size: int = Field(..., description="Vocabulary size")
     context_length: int = Field(..., description="Context length")
     d_model: int = Field(..., description="Transformer model dimension")
@@ -43,6 +49,24 @@ class TrainHyperparameters(BaseModel):
             val_path=args.val_path,
         )
 
+def get_tokenizer(train_config : TrainConfig) -> BPETokenizer:
+    train_data_name = splitext(basename(train_config.train_path))[0]
+    tokenizer_dir = join(TOKENIZER_CACHE_DIR, train_data_name)
+    vocab_path = join(tokenizer_dir, "vocab.pkl")
+    merges_path = join(tokenizer_dir, "merges.pkl")
+    if exists(vocab_path) and exists(merges_path):
+        tokenizer = BPETokenizer.from_trained_tokenizer_files(vocab_path, merges_path)
+        print(f"Loaded trained tokenizer from directory: {tokenizer_dir}")
+    else:
+        tokenizer = BPETokenizer(special_tokens=TOKENIZER_SPECIAL_TOKENS)
+        print(f"Training the tokenizer...", end="\t")
+        tokenizer.train(train_config.train_path, train_config.vocab_size)
+        os.makedirs(tokenizer_dir, exist_ok=True)
+        tokenizer.save(vocab_path, merges_path)
+        print(f"Saved trained tokenizer to directory: {tokenizer_dir}")
+        print(f"Done training tokenizer!")
+    
+    return tokenizer
 
 def get_argparser():
     parser = argparse.ArgumentParser(description="Training arguments for TransformerLM")
@@ -69,8 +93,13 @@ if __name__ == "__main__":
     parser = get_argparser()
     args = parser.parse_args()
 
-    train_hyperparams = TrainHyperparameters.from_args(args)
+    train_config = TrainConfig.from_args(args)
 
-    print(train_hyperparams)
+    tokenizer = get_tokenizer(train_config)
+
+
+
+
+
 
 

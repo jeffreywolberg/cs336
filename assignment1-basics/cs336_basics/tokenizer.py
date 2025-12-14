@@ -9,6 +9,8 @@ import multiprocessing
 from tqdm import tqdm
 import pickle
 
+import torch
+
 from .pretokenization_example import find_chunk_boundaries
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""" # pattern
@@ -87,6 +89,13 @@ class BPETokenizer(Tokenizer):
         obj._merges = merges
 
         return obj
+
+    def save(self, vocab_filepath : str, merges_filepath : str):
+        with open(vocab_filepath, 'w') as f:
+            pickle.dump(self._vocab, f)
+        with open(merges_filepath, 'w') as f:
+            pickle.dump(self._merges, f)
+        # Assumes special tokens don't change on load
 
     def split_on_special_tokens(self, text: str) -> list[str]:
         if len(self.special_tokens) == 0:

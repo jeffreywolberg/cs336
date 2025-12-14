@@ -533,12 +533,7 @@ def run_get_batch(
     """
 
     
-    seq_st = torch.randint(0, len(dataset) - context_length, size=(batch_size,), device=device)
-
-    st_inds = seq_st[:, None] + torch.arange(context_length, device=device)[None, :]
-    dataset_tensor = torch.tensor(dataset, device=device)
-    seqs = dataset_tensor[st_inds]
-    labels = dataset_tensor[st_inds+1]
+    seqs, labels = get_batch(dataset, batch_size, context_length, device)
 
     return seqs, labels
 

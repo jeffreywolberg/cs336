@@ -21,16 +21,16 @@ def clip_gradients(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float,
     for p in parameters:
         if p.grad is None:
             continue
-        grad_sum_sq += torch.sum(torch.square(p.grad))
+        grad_sum_sq = grad_sum_sq + torch.sum(torch.square(p.grad))
     grad_norm = math.sqrt(grad_sum_sq)
     if grad_norm > max_l2_norm:
         factor = max_l2_norm / (grad_norm + eps)
         for p in parameters:
             if p.grad is None:
                 continue
-            p.grad.mul_(factor)
+            p.grad = p.grad * factor
 class AdamW(torch.optim.Optimizer):
-    def __init__(self, params: ParamsT, lr = 1.e-3, betas : Tuple[float, float] = (0.9, 0.999), eps=1.e-8, weight_decay=1.e-3) -> None:
+    def __init__(self, params: ParamsT, lr = 1.e-3, betas : Tuple[float, float] = (0.9, 0.999), eps=1.e-8, weight_decay=1.e-2) -> None:
         b1, b2 = betas
         defaults = {'lr': lr, 'b1' : b1, 'b2': b2, 'eps': eps, 'weight_decay': weight_decay}
         super().__init__(params, defaults)
@@ -49,9 +49,9 @@ class AdamW(torch.optim.Optimizer):
                 param_state = self.state[p] 
                 t = param_state.get("t", 1) 
                 grad = p.grad.data
-                param_state['m'] = b1 * param_state.get('m', torch.tensor([0.0])) + (1 - b1) * grad
-                param_state['v'] = b2 * param_state.get('v', torch.tensor([0.0])) + (1 - b2) * grad * grad
-                lr_t = lr * torch.sqrt(torch.tensor([1 - b2 ** t])) / (1 - b1 ** t)
-                p.data -= lr_t * param_state['m'] / (torch.sqrt(param_state['v']) + eps)
-                p.data -= lr * weight_decay * p.data
+                param_state['m'] = b1 * param_state.get('m', torch.tensor([0.0], device=p.device)) + (1 - b1) * grad
+                param_state['v'] = b2 * param_state.get('v', torch.tensor([0.0], device=p.device)) + (1 - b2) * grad * grad
+                lr_t = lr * math.sqrt(1 - b2 ** t) / (1 - b1 ** t)
+                p.data = p.data - lr_t * param_state['m'] / (torch.sqrt(param_state['v']) + eps)
+                p.data = p.data - lr * weight_decay * p.data
                 param_state["t"] = t + 1

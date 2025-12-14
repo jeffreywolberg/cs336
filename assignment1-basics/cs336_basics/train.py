@@ -1,14 +1,27 @@
 import argparse
+import math
 import os
+import numpy as np
 from os.path import join, basename, exists, splitext
 
 from pydantic import BaseModel, Field
+from torch import nn
+import torch
+from tqdm import tqdm
 
+from cs336_basics.loss import CrossEntropy
+from cs336_basics.model import TransformerLM
+from cs336_basics.opt import AdamW
 from cs336_basics.tokenizer import BPETokenizer
+from cs336_basics.dataset import get_batch
 
 CACHE_DIR = "data/cache"
 TOKENIZER_CACHE_DIR = join(CACHE_DIR, "tokenizer")
+DATASET_CACHE_DIR = join(CACHE_DIR, "dataset")
 TOKENIZER_SPECIAL_TOKENS = ["<|endoftext|>"]
+
+N_VAL = 200
+N_VAL_STEPS = 10
 
 class TrainConfig(BaseModel):
     vocab_size: int = Field(..., description="Vocabulary size")
@@ -23,6 +36,7 @@ class TrainConfig(BaseModel):
     adamw_beta1: float = Field(..., description="AdamW beta1")
     adamw_beta2: float = Field(..., description="AdamW beta2")
     adamw_eps: float = Field(..., description="AdamW epsilon")
+    adamw_weight_decay : float = Field(..., description="AdamW weight decay")
     batch_size: int = Field(..., description="Batch size")
     total_tokens_processed: int = Field(..., description="Number of total tokens to process")
     train_path: str = Field(..., description="Path to the training data file")
@@ -43,14 +57,15 @@ class TrainConfig(BaseModel):
             adamw_beta1=args.adamw_beta1,
             adamw_beta2=args.adamw_beta2,
             adamw_eps=args.adamw_eps,
+            adamw_weight_decay=args.adamw_weight_decay,
             batch_size=args.batch_size,
             total_tokens_processed=args.total_tokens_processed,
             train_path=args.train_path,
             val_path=args.val_path,
         )
 
-def get_tokenizer(train_config : TrainConfig) -> BPETokenizer:
-    train_data_name = splitext(basename(train_config.train_path))[0]
+def get_tokenizer(cfg : TrainConfig) -> BPETokenizer:
+    train_data_name = splitext(basename(cfg.train_path))[0]
     tokenizer_dir = join(TOKENIZER_CACHE_DIR, train_data_name)
     vocab_path = join(tokenizer_dir, "vocab.pkl")
     merges_path = join(tokenizer_dir, "merges.pkl")
@@ -60,13 +75,45 @@ def get_tokenizer(train_config : TrainConfig) -> BPETokenizer:
     else:
         tokenizer = BPETokenizer(special_tokens=TOKENIZER_SPECIAL_TOKENS)
         print(f"Training the tokenizer...", end="\t")
-        tokenizer.train(train_config.train_path, train_config.vocab_size)
+        tokenizer.train(cfg.train_path, cfg.vocab_size)
         os.makedirs(tokenizer_dir, exist_ok=True)
         tokenizer.save(vocab_path, merges_path)
         print(f"Saved trained tokenizer to directory: {tokenizer_dir}")
         print(f"Done training tokenizer!")
     
     return tokenizer
+
+def get_datasets(cfg : TrainConfig):
+    train_dataset_cache_dir = join(DATASET_CACHE_DIR, splitext(basename(cfg.train_path))[0])
+    val_dataset_cache_dir = join(DATASET_CACHE_DIR, splitext(basename(cfg.val_path))[0])
+    train_dataset_cache_path = join(train_dataset_cache_dir, 'data.npy')
+    val_dataset_cache_path = join(val_dataset_cache_dir, 'data.npy')
+    
+    if not exists(train_dataset_cache_path) or not exists(val_dataset_cache_path):
+        tokenizer : BPETokenizer = get_tokenizer(cfg)
+        print(f"Getting datassets...", end="\t")
+        def get_tokens(text_path):
+            print(f"Encoding text from: {text_path} (this will take a while)")
+            with open(text_path, 'r') as f:
+                ids = []
+                for _id in tokenizer.encode_iterable(f):
+                    ids.append(_id)
+            return np.array(ids, dtype=np.int32)
+        train_tokens : np.ndarray = get_tokens(cfg.train_path)
+        val_tokens : np.ndarray = get_tokens(cfg.val_path)
+        os.makedirs(train_dataset_cache_dir, exist_ok=True)
+        os.makedirs(val_dataset_cache_dir, exist_ok=True)
+        np.save(train_dataset_cache_path, train_tokens)
+        np.save(val_dataset_cache_path, val_tokens)
+        print(f"Saved train dataset to {train_dataset_cache_path}")
+        print(f"Saved val dataset to {val_dataset_cache_path}")
+    else:
+        train_tokens = np.load(train_dataset_cache_path, mmap_mode='r')
+        val_tokens = np.load(val_dataset_cache_path, mmap_mode='r')
+        print(f"Loaded train dataset from {train_dataset_cache_path}")
+        print(f"Loaded val dataset from {val_dataset_cache_path}")
+
+    return train_tokens, val_tokens
 
 def get_argparser():
     parser = argparse.ArgumentParser(description="Training arguments for TransformerLM")
@@ -83,22 +130,72 @@ def get_argparser():
     parser.add_argument("--adamw_beta1", type=float, default=0.9, help="AdamW beta1 (default: 0.9)")
     parser.add_argument("--adamw_beta2", type=float, default=0.999, help="AdamW beta2 (default: 0.999)")
     parser.add_argument("--adamw_eps", type=float, default=1e-8, help="AdamW epsilon (default: 1e-8)")
+    parser.add_argument("--adamw_weight_decay", type=float, default=1.e-2, help="AdamW weight decay")
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size (default: 32)")
     parser.add_argument("--total_tokens_processed", type=int, default=327_680_000, help="Number of total tokens to process = batch_size x total_step_count x context_length")
     parser.add_argument("--train_path", type=str, default="data/TinyStoriesV2-GPT4-train.txt", help="Path to the training data file")
     parser.add_argument("--val_path", type=str, default="data/TinyStoriesV2-GPT4-valid.txt", help="Path to the validation data file")
     return parser
 
+def validate(model : TransformerLM, dataset : np.ndarray,  loss : CrossEntropy, cfg : TrainConfig, device) -> float:
+    loss_val = 0.0
+    model.eval()
+    with torch.no_grad():
+        for step in tqdm(range(N_VAL_STEPS), desc="Val step"):
+            input_tokens, targets = get_batch(dataset, cfg.batch_size, cfg.context_length, device)
+            input_tokens, targets = input_tokens.to(device), targets.to(device)
+            preds = model(input_tokens)
+            loss_output = loss(preds.reshape(-1, cfg.vocab_size), targets.reshape(-1))
+            loss_val += loss_output.item()
+    return loss_val / N_VAL_STEPS
+
+def train(model : TransformerLM, opt : AdamW, dataset : np.ndarray, loss : CrossEntropy, cfg : TrainConfig, num_train_steps : int, device) -> float:
+    loss_val = 0.0
+    for step in tqdm(range(num_train_steps), desc="Train step within iter"):
+        opt.zero_grad()
+        input_tokens, targets = get_batch(dataset, cfg.batch_size, cfg.context_length, device)
+        preds = model(input_tokens)
+        loss_output = loss(preds.reshape(-1, cfg.vocab_size), targets.reshape(-1))
+        loss_output.backward()
+        opt.step()
+        loss_val += loss_output.item()
+    return loss_val / num_train_steps
+
 if __name__ == "__main__":
     parser = get_argparser()
     args = parser.parse_args()
 
-    train_config = TrainConfig.from_args(args)
+    cfg = TrainConfig.from_args(args)
+    device = torch.device('mps:0')
 
-    tokenizer = get_tokenizer(train_config)
+    train_dataset, val_dataset = get_datasets(cfg)
 
+    model = TransformerLM(cfg.vocab_size, cfg.context_length, cfg.d_model, cfg.num_layers, cfg.num_heads, cfg.d_ff, cfg.rope_theta, device=device)
+    opt = AdamW(model.parameters(), cfg.learning_rate, (cfg.adamw_beta1, cfg.adamw_beta2), cfg.adamw_eps, cfg.adamw_weight_decay)
+    loss = CrossEntropy()
 
+    n_total_steps = math.ceil(cfg.total_tokens_processed / (cfg.batch_size * cfg.context_length))
 
+    n_train_steps_per_iter = n_total_steps // N_VAL
+    n_iters = n_total_steps // n_train_steps_per_iter
+
+    print(f"Training for n_iters={n_iters}, n_train_steps_per_iter={n_train_steps_per_iter}")
+
+    train_losses = []
+    val_losses = []
+
+    torch.autograd.set_detect_anomaly(True)
+    loss_val = validate(model, val_dataset, loss, cfg, device)
+    print(f"[-1] Val loss value: {loss_val:.3f}")
+    for iter in tqdm(range(n_iters), desc="Training iter", leave=True):
+        train_loss_val = train(model, opt, train_dataset, loss, cfg, n_train_steps_per_iter, device)
+        print(f"[{iter}] Train loss: {train_loss_val}")
+        val_loss_val = validate()
+        print(f"[{iter}] Val loss: {val_loss_val}")
+        train_losses.append(train_loss_val)
+        val_losses.append(val_loss_val)
+
+        
 
 
 

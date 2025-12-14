@@ -91,9 +91,9 @@ class BPETokenizer(Tokenizer):
         return obj
 
     def save(self, vocab_filepath : str, merges_filepath : str):
-        with open(vocab_filepath, 'w') as f:
+        with open(vocab_filepath, 'wb') as f:
             pickle.dump(self._vocab, f)
-        with open(merges_filepath, 'w') as f:
+        with open(merges_filepath, 'wb') as f:
             pickle.dump(self._merges, f)
         # Assumes special tokens don't change on load
 

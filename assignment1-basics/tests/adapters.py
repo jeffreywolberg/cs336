@@ -10,6 +10,7 @@ import torch
 from torch import Tensor
 
 from cs336_basics.loss import CrossEntropy
+from cs336_basics.opt import AdamW
 from cs336_basics.tokenizer import BPETokenizer
 from cs336_basics.model import Embedding, Linear, MultiheadSelfAttention, RotaryPositionalEmbedding, SwiGLUFNN, RMSNorm, TransformerBlock, TransformerLM, scaled_dot_product_attention, softmax
 
@@ -583,8 +584,7 @@ def get_adamw_cls() -> type[torch.optim.Optimizer]:
     """
     Returns a torch.optim.Optimizer that implements AdamW.
     """
-    raise NotImplementedError
-
+    return AdamW
 
 def run_get_lr_cosine_schedule(
     it: int,

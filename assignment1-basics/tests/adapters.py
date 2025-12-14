@@ -390,7 +390,82 @@ def run_transformer_lm(
     model = TransformerLM(vocab_size, context_length, d_model, num_layers, num_heads, d_ff, rope_theta)
     model.load_state_dict(weights)
     
-    return model(in_indices)
+    out = model(in_indices)
+
+
+    # vocab_size = 50257
+    # context_length = 1024
+    # num_layers = 48
+    # d_model = 1600
+    # num_heads = 25
+    # d_ff = 6400
+    # model = TransformerLM(vocab_size, context_length, d_model, num_layers, num_heads, d_ff, rope_theta)
+
+    
+    # ln = d_model
+    # # proj_qkv = 3 * (d_model * context_length * d_model)
+    # proj_qkv = 3 * (d_model * d_model)
+    # # attn = num_heads * context_length ** 2 * (d_model // num_heads)
+    # attn = 0
+    # # out_proj = context_length * d_model * d_model
+    # out_proj = d_model ** 2
+
+    # # ffn_w1_w2_w3 = 3 * context_length * d_model * d_ff
+    # ffn_w1_w2_w3 = 3 * d_model * d_ff
+
+    # embedding = vocab_size * d_model
+    # transformer_block = (ln + (proj_qkv + attn + out_proj) + (ffn_w1_w2_w3 + ln))
+    # ln_final = ln
+    # # lm_head = d_model * context_length * vocab_size
+    # lm_head = d_model * vocab_size
+
+    # # print(f"transformer_block: {transformer_block}")
+    # # print(f"torch transformer_block: { sum(p.numel() for p in model.layers[0].parameters() if p.requires_grad)}")
+
+    # # print(f"lm_head: {lm_head}")
+    # # print(f"pytorch lm_head: {sum(p.numel() for p in model.lm_head.parameters() if p.requires_grad)}")
+
+    # total = embedding + num_layers * transformer_block + ln_final + lm_head
+    # torch_total = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+    # print(f"Total trainable parameters: {total}")
+    # print(f"Pytorch total: {torch_total}")
+
+
+    # vocab_size = 50257
+    # # context_length = 1024
+    # context_length = 16384
+    # d_ff = 6400
+    # num_layers = 48
+    # d_model = 1600
+    # num_heads = 25
+    # # for num_layers, d_model, num_heads in zip([12, 24, 36], [768, 1024, 1280], [12, 16, 20]):
+    # if True:
+    #     print(f"\n\nUsing num_layers, d_model, num_heads={num_layers, d_model, num_heads}")
+
+    #     ln = d_model
+    #     proj_qkv = 3 * (d_model * context_length * d_model) * 2
+    #     attn = num_heads * context_length ** 2 * (d_model // num_heads) * 2
+    #     out_proj = context_length * d_model * d_model * 2
+
+    #     ffn_w1_w2_w3 = 3 * context_length * d_model * d_ff * 2
+
+    #     embedding = vocab_size * d_model * 2
+    #     transformer_block = (ln + (proj_qkv + attn + out_proj) + (ffn_w1_w2_w3 + ln))
+    #     ln_final = ln
+    #     lm_head = d_model * context_length * vocab_size * 2
+
+    #     print(f"embedding: {embedding}")
+    #     print(f"\tproj_qkv: {proj_qkv}")
+    #     print(f"\tattn: {attn}")
+    #     print(f"\tout_proj: {out_proj}")
+    #     print(f"\tffn_w1_w2_w3: {ffn_w1_w2_w3}")
+    #     print(f"transformer_block: {transformer_block}")
+
+    #     total_flops = embedding + num_layers * transformer_block + ln_final + lm_head
+    #     print(f"total flops: {total_flops}")
+
+    return out
     
 
 

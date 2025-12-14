@@ -10,7 +10,7 @@ import torch
 from torch import Tensor
 
 from cs336_basics.loss import CrossEntropy
-from cs336_basics.opt import AdamW, get_lr_with_cosine_sched
+from cs336_basics.opt import AdamW, clip_gradients, get_lr_with_cosine_sched
 from cs336_basics.tokenizer import BPETokenizer
 from cs336_basics.model import Embedding, Linear, MultiheadSelfAttention, RotaryPositionalEmbedding, SwiGLUFNN, RMSNorm, TransformerBlock, TransformerLM, scaled_dot_product_attention, softmax
 
@@ -577,7 +577,8 @@ def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm:
 
     The gradients of the parameters (parameter.grad) should be modified in-place.
     """
-    raise NotImplementedError
+    return clip_gradients(parameters, max_l2_norm)
+    
 
 
 def get_adamw_cls() -> type[torch.optim.Optimizer]:

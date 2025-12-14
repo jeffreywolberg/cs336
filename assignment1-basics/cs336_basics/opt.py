@@ -1,5 +1,5 @@
 import math
-from typing import Callable, Optional, Tuple
+from typing import Callable, Iterable, Optional, Tuple
 import torch
 from torch.optim.optimizer import ParamsT
 
@@ -16,6 +16,19 @@ def get_lr_with_cosine_sched(it: int,
     else:
         return min_learning_rate
 
+def clip_gradients(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float, eps: float = 1.e-6):
+    grad_sum_sq = 0.0
+    for p in parameters:
+        if p.grad is None:
+            continue
+        grad_sum_sq += torch.sum(torch.square(p.grad))
+    grad_norm = math.sqrt(grad_sum_sq)
+    if grad_norm > max_l2_norm:
+        factor = max_l2_norm / (grad_norm + eps)
+        for p in parameters:
+            if p.grad is None:
+                continue
+            p.grad.mul_(factor)
 
 class AdamW(torch.optim.Optimizer):
     def __init__(self, params: ParamsT, lr = 1.e-3, betas : Tuple[float, float] = (0.9, 0.999), eps=1.e-8, weight_decay=1.e-3) -> None:

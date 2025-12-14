@@ -29,7 +29,6 @@ def clip_gradients(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float,
             if p.grad is None:
                 continue
             p.grad.mul_(factor)
-
 class AdamW(torch.optim.Optimizer):
     def __init__(self, params: ParamsT, lr = 1.e-3, betas : Tuple[float, float] = (0.9, 0.999), eps=1.e-8, weight_decay=1.e-3) -> None:
         b1, b2 = betas

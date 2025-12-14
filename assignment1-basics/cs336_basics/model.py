@@ -280,3 +280,17 @@ class TransformerLM(nn.Module):
 
         return x
 
+def save_checkpoint(model: nn.Module, optimizer: torch.optim.Optimizer, iteration : int, out):
+    data = {
+        "model": model.state_dict(),
+        "opt": optimizer.state_dict(),
+        "iteration": iteration
+    }
+    torch.save(data, out)
+
+def load_checkpoint(src, model: nn.Module, optimizer: torch.optim.Optimizer):
+    data = torch.load(src)
+    model.load_state_dict(data['model'])
+    optimizer.load_state_dict(data['opt'])
+    return data['iteration']
+    

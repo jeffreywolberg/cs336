@@ -12,7 +12,7 @@ from torch import Tensor
 from cs336_basics.loss import CrossEntropy
 from cs336_basics.opt import AdamW, clip_gradients, get_lr_with_cosine_sched
 from cs336_basics.tokenizer import BPETokenizer
-from cs336_basics.model import Embedding, Linear, MultiheadSelfAttention, RotaryPositionalEmbedding, SwiGLUFNN, RMSNorm, TransformerBlock, TransformerLM, scaled_dot_product_attention, softmax
+from cs336_basics.model import Embedding, Linear, MultiheadSelfAttention, RotaryPositionalEmbedding, SwiGLUFNN, RMSNorm, TransformerBlock, TransformerLM, load_checkpoint, save_checkpoint, scaled_dot_product_attention, softmax
 
 def run_linear(
     d_in: int,
@@ -640,7 +640,7 @@ def run_save_checkpoint(
             we've completed.
         out (str | os.PathLike | BinaryIO | IO[bytes]): Path or file-like object to serialize the model, optimizer, and iteration to.
     """
-    raise NotImplementedError
+    save_checkpoint(model, optimizer, iteration, out)
 
 
 def run_load_checkpoint(
@@ -661,7 +661,7 @@ def run_load_checkpoint(
     Returns:
         int: the previously-serialized number of iterations.
     """
-    raise NotImplementedError
+    return load_checkpoint(src, model, optimizer)
 
 
 def get_tokenizer(

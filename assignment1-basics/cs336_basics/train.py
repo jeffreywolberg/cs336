@@ -9,6 +9,7 @@ from torch import nn
 import torch
 from tqdm import tqdm
 
+from cs336_basics.generate import generate_text
 from cs336_basics.loss import CrossEntropy
 from cs336_basics.model import TransformerLM
 from cs336_basics.opt import AdamW
@@ -20,7 +21,7 @@ TOKENIZER_CACHE_DIR = join(CACHE_DIR, "tokenizer")
 DATASET_CACHE_DIR = join(CACHE_DIR, "dataset")
 TOKENIZER_SPECIAL_TOKENS = ["<|endoftext|>"]
 
-N_VAL = 200
+N_VAL = 2000
 N_VAL_STEPS = 10
 
 class TrainConfig(BaseModel):
@@ -89,7 +90,8 @@ def get_datasets(cfg : TrainConfig):
     train_dataset_cache_path = join(train_dataset_cache_dir, 'data.npy')
     val_dataset_cache_path = join(val_dataset_cache_dir, 'data.npy')
     
-    if not exists(train_dataset_cache_path) or not exists(val_dataset_cache_path):
+    # if not exists(train_dataset_cache_path) or not exists(val_dataset_cache_path):
+    if not exists(val_dataset_cache_path):
         tokenizer : BPETokenizer = get_tokenizer(cfg)
         print(f"Getting datassets...", end="\t")
         def get_tokens(text_path):
@@ -99,21 +101,22 @@ def get_datasets(cfg : TrainConfig):
                 for _id in tokenizer.encode_iterable(f):
                     ids.append(_id)
             return np.array(ids, dtype=np.int32)
-        train_tokens : np.ndarray = get_tokens(cfg.train_path)
+        # train_tokens : np.ndarray = get_tokens(cfg.train_path)
         val_tokens : np.ndarray = get_tokens(cfg.val_path)
-        os.makedirs(train_dataset_cache_dir, exist_ok=True)
+        # os.makedirs(train_dataset_cache_dir, exist_ok=True)
         os.makedirs(val_dataset_cache_dir, exist_ok=True)
-        np.save(train_dataset_cache_path, train_tokens)
+        # np.save(train_dataset_cache_path, train_tokens)
         np.save(val_dataset_cache_path, val_tokens)
-        print(f"Saved train dataset to {train_dataset_cache_path}")
+        # print(f"Saved train dataset to {train_dataset_cache_path}")
         print(f"Saved val dataset to {val_dataset_cache_path}")
     else:
-        train_tokens = np.load(train_dataset_cache_path, mmap_mode='r')
+        # train_tokens = np.load(train_dataset_cache_path, mmap_mode='r')
         val_tokens = np.load(val_dataset_cache_path, mmap_mode='r')
-        print(f"Loaded train dataset from {train_dataset_cache_path}")
+        # print(f"Loaded train dataset from {train_dataset_cache_path}")
         print(f"Loaded val dataset from {val_dataset_cache_path}")
 
-    return train_tokens, val_tokens
+    return val_tokens, val_tokens
+    # return train_tokens, val_tokens
 
 def get_argparser():
     parser = argparse.ArgumentParser(description="Training arguments for TransformerLM")
@@ -141,7 +144,7 @@ def validate(model : TransformerLM, dataset : np.ndarray,  loss : CrossEntropy, 
     loss_val = 0.0
     model.eval()
     with torch.no_grad():
-        for step in tqdm(range(N_VAL_STEPS), desc="Val step"):
+        for step in tqdm(range(N_VAL_STEPS), desc="Val step", leave=False):
             input_tokens, targets = get_batch(dataset, cfg.batch_size, cfg.context_length, device)
             input_tokens, targets = input_tokens.to(device), targets.to(device)
             preds = model(input_tokens)
@@ -151,7 +154,7 @@ def validate(model : TransformerLM, dataset : np.ndarray,  loss : CrossEntropy, 
 
 def train(model : TransformerLM, opt : AdamW, dataset : np.ndarray, loss : CrossEntropy, cfg : TrainConfig, num_train_steps : int, device) -> float:
     loss_val = 0.0
-    for step in tqdm(range(num_train_steps), desc="Train step within iter"):
+    for step in tqdm(range(num_train_steps), desc="Train step within iter", leave=False):
         opt.zero_grad()
         input_tokens, targets = get_batch(dataset, cfg.batch_size, cfg.context_length, device)
         preds = model(input_tokens)
@@ -168,6 +171,7 @@ if __name__ == "__main__":
     cfg = TrainConfig.from_args(args)
     device = torch.device('mps:0')
 
+    tokenizer = get_tokenizer(cfg)
     train_dataset, val_dataset = get_datasets(cfg)
 
     model = TransformerLM(cfg.vocab_size, cfg.context_length, cfg.d_model, cfg.num_layers, cfg.num_heads, cfg.d_ff, cfg.rope_theta, device=device)
@@ -183,17 +187,27 @@ if __name__ == "__main__":
 
     train_losses = []
     val_losses = []
+    val_texts = []
+    val_text_gen_temp = 2.0
+    val_text_p_sample = 0.01
+    val_max_token_gen = 64
+    val_starting_toks : list[int] = tokenizer.encode("This is the start of an important message:\n")
 
     torch.autograd.set_detect_anomaly(True)
-    loss_val = validate(model, val_dataset, loss, cfg, device)
-    print(f"[-1] Val loss value: {loss_val:.3f}")
+    val_text = generate_text(model, tokenizer, val_starting_toks, val_max_token_gen, temperature=val_text_gen_temp, p_sample=val_text_p_sample)
+    print(f"[-1] Val generated text (temp={val_text_gen_temp}):\n{val_text}\n")
+    val_loss_val = validate(model, val_dataset, loss, cfg, device)
+    print(f"[-1] Val loss value: {val_loss_val:.3f}")
     for iter in tqdm(range(n_iters), desc="Training iter", leave=True):
         train_loss_val = train(model, opt, train_dataset, loss, cfg, n_train_steps_per_iter, device)
-        print(f"[{iter}] Train loss: {train_loss_val}")
-        val_loss_val = validate()
-        print(f"[{iter}] Val loss: {val_loss_val}")
+        print(f"[{iter}] Train loss: {train_loss_val:.3f}")
+        val_text = generate_text(model, tokenizer, val_starting_toks, val_max_token_gen, temperature=val_text_gen_temp, p_sample=val_text_p_sample)
+        print(f"[{iter}] Val generated text (temp={val_text_gen_temp}):\n{val_text}\n")
+        val_loss_val = validate(model, val_dataset, loss, cfg, device)
+        print(f"[{iter}] Val loss: {val_loss_val:.3f}")
         train_losses.append(train_loss_val)
         val_losses.append(val_loss_val)
+        val_texts.append(val_text)
 
         
 

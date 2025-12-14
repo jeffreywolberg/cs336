@@ -4,6 +4,8 @@ import einx
 import torch
 import torch.nn as nn
 
+from cs336_basics.tokenizer import BPETokenizer
+
 class Linear(nn.Module):
     def __init__(self, in_features, out_features, device=None, dtype=None):
         super().__init__()
@@ -130,14 +132,15 @@ class RotaryPositionalEmbedding(nn.Module):
         
         return out
     
-def softmax(x : torch.Tensor, dim : int):
+def softmax(x : torch.Tensor, dim : int, temperature : float = 1):
     """
     produce a valid probability distribution by raising e to each logit, and normalizing across all values within this dimension.
     """
     max_val = torch.max(x, dim=dim, keepdim=True).values
     x_shifted = x - max_val
-    x_shifted_exp = torch.exp(x_shifted)
+    x_shifted_exp = torch.exp(x_shifted / temperature)
     return x_shifted_exp / torch.sum(x_shifted_exp, dim=dim, keepdim=True)
+
 
 def scaled_dot_product_attention(keys : torch.Tensor, queries : torch.Tensor, values : torch.Tensor, mask=None):
     """

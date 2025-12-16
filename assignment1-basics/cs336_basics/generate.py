@@ -16,7 +16,7 @@ def sample(probs : torch.Tensor, p_sample : float):
 
     denom = torch.sum(vals).item()
     new_probs = probs[args] / denom
-    tok = args[new_probs.multinomial(1)]
+    tok = args[new_probs.multinomial(1)].item()
 
     return tok
 
@@ -31,7 +31,7 @@ def generate_text(model : TransformerLM, tokenizer : BPETokenizer, prompt : list
     token_i = len(prompt)
     
     model.eval()
-    while (max_generated_tokens is not None and token_i < max_generated_tokens + len(prompt)) or tokenizer.decode([last_generated_tok]) in special_tokens:
+    while (max_generated_tokens is not None and token_i < max_generated_tokens + len(prompt)) or (last_generated_tok is not None and tokenizer.decode([last_generated_tok]) in special_tokens):
         if token_i == len(toks) == 0:
             toks = torch.cat([toks, toks_empty_buffer], dim=0)
         with torch.no_grad():

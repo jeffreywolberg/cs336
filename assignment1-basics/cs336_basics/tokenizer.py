@@ -2,7 +2,7 @@ from abc import ABC
 from array import array
 import regex as re
 from collections import Counter, defaultdict
-from typing import BinaryIO, Iterable, Iterator, Union
+from typing import BinaryIO, Dict, Iterable, Iterator, Union
 import numpy as np
 from time import time
 import multiprocessing
@@ -309,15 +309,20 @@ class BPETokenizer(Tokenizer):
                 if isinstance(word, re.Match):
                     word = word.group()
                 word : list[bytes] = [bytes([b]) for b in word.encode('utf-8')]
-                # print(f"starting word: {word}")
-                for i, (merge, vocab_idx) in enumerate(self._merges.items()):
-                    changed = True
-                    while changed and len(word) > 1:
+                
+                changed = True
+                while changed and len(word) > 1:
+                    merges_in_word : Dict[tuple[bytes, bytes], int] = {}
+                    for i, pair in enumerate(zip(word[:-1], word[1:])):
+                        if pair in self._merges:
+                            merges_in_word[pair] = self._merges[pair] # token id
+                    if len(merges_in_word) == 0:
+                        changed = False
+                    else:
+                        merge, tok = min(merges_in_word.items(), key=lambda item: item[1])
                         word, changed = self._apply_merge(word, merge)
-                        # if changed:
-                            # print(f"{i}) applied {merge, len(a), len(b)} -> {vocab_idx}, word={word}")
-                # print(f"ending word: {word}")
-
+                        assert changed is True
+                    
                 toks = [_inverse_vocab[bytes_chunk] for bytes_chunk in word]   
                 toks_list.extend(toks)
 

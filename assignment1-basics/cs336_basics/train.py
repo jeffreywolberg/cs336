@@ -97,33 +97,39 @@ def get_datasets(cfg : TrainConfig):
     train_dataset_cache_path = join(train_dataset_cache_dir, 'data.npy')
     val_dataset_cache_path = join(val_dataset_cache_dir, 'data.npy')
     
-    # if not exists(train_dataset_cache_path) or not exists(val_dataset_cache_path):
-    if not exists(val_dataset_cache_path):
+    if not exists(train_dataset_cache_path) or not exists(val_dataset_cache_path):
         tokenizer : BPETokenizer = get_tokenizer(cfg)
         print(f"Getting datassets...", end="\t")
         def get_tokens(text_path):
+            def chunk_reader(f, chunk_size=4*1024*1024): # Read 4 MB at a time
+                while True:
+                    chunk = f.read(chunk_size)
+                    if not chunk:
+                        break
+                    yield chunk
             print(f"Encoding text from: {text_path} (this will take a while)")
             with open(text_path, 'r') as f:
                 ids = []
-                for _id in tokenizer.encode_iterable(f):
+                for _id in tokenizer.encode_iterable(chunk_reader(f)):
                     ids.append(_id)
             return np.array(ids, dtype=np.int32)
-        # train_tokens : np.ndarray = get_tokens(cfg.train_path)
+
+        train_tokens : np.ndarray = get_tokens(cfg.train_path)
         val_tokens : np.ndarray = get_tokens(cfg.val_path)
-        # os.makedirs(train_dataset_cache_dir, exist_ok=True)
+        os.makedirs(train_dataset_cache_dir, exist_ok=True)
         os.makedirs(val_dataset_cache_dir, exist_ok=True)
-        # np.save(train_dataset_cache_path, train_tokens)
+        np.save(train_dataset_cache_path, train_tokens)
         np.save(val_dataset_cache_path, val_tokens)
-        # print(f"Saved train dataset to {train_dataset_cache_path}")
+        print(f"Saved train dataset to {train_dataset_cache_path}")
         print(f"Saved val dataset to {val_dataset_cache_path}")
     else:
-        # train_tokens = np.load(train_dataset_cache_path, mmap_mode='r')
+        train_tokens = np.load(train_dataset_cache_path, mmap_mode='r')
         val_tokens = np.load(val_dataset_cache_path, mmap_mode='r')
-        # print(f"Loaded train dataset from {train_dataset_cache_path}")
+        print(f"Loaded train dataset from {train_dataset_cache_path}")
         print(f"Loaded val dataset from {val_dataset_cache_path}")
 
-    return val_tokens, val_tokens
-    # return train_tokens, val_tokens
+    # return val_tokens, val_tokens
+    return train_tokens, val_tokens
 
 def get_argparser():
     parser = argparse.ArgumentParser(description="Training arguments for TransformerLM")

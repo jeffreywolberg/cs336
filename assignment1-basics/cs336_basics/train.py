@@ -1,6 +1,7 @@
 import argparse
 import math
 import os
+from typing import Optional
 import numpy as np
 from os.path import join, basename, exists, splitext
 
@@ -11,7 +12,7 @@ from tqdm import tqdm
 
 from cs336_basics.generate import generate_text
 from cs336_basics.loss import CrossEntropy
-from cs336_basics.model import TransformerLM
+from cs336_basics.model import TransformerLM, load_checkpoint, save_checkpoint
 from cs336_basics.opt import AdamW
 from cs336_basics.tokenizer import BPETokenizer
 from cs336_basics.dataset import get_batch
@@ -19,10 +20,12 @@ from cs336_basics.dataset import get_batch
 CACHE_DIR = "data/cache"
 TOKENIZER_CACHE_DIR = join(CACHE_DIR, "tokenizer")
 DATASET_CACHE_DIR = join(CACHE_DIR, "dataset")
+MODEL_CACHE_DIR = join(CACHE_DIR, "model")
 TOKENIZER_SPECIAL_TOKENS = ["<|endoftext|>"]
 
 N_VAL = 2000
-N_VAL_STEPS = 10
+N_VAL_STEPS = 25
+SAVE_MODEL_EVERY_N_ITERS = 25
 
 class TrainConfig(BaseModel):
     vocab_size: int = Field(..., description="Vocabulary size")
@@ -42,6 +45,8 @@ class TrainConfig(BaseModel):
     total_tokens_processed: int = Field(..., description="Number of total tokens to process")
     train_path: str = Field(..., description="Path to the training data file")
     val_path: str = Field(..., description="Path to the validation data file")
+    training_run: str = Field(..., description="Training run identifier string")
+    ckpt_path: Optional[str] = Field(None, description="Optional checkpoint path to load from")
 
     @classmethod
     def from_args(cls, args):
@@ -63,6 +68,8 @@ class TrainConfig(BaseModel):
             total_tokens_processed=args.total_tokens_processed,
             train_path=args.train_path,
             val_path=args.val_path,
+            training_run=args.training_run,
+            ckpt_path=args.ckpt_path,
         )
 
 def get_tokenizer(cfg : TrainConfig) -> BPETokenizer:
@@ -138,6 +145,8 @@ def get_argparser():
     parser.add_argument("--total_tokens_processed", type=int, default=327_680_000, help="Number of total tokens to process = batch_size x total_step_count x context_length")
     parser.add_argument("--train_path", type=str, default="data/TinyStoriesV2-GPT4-train.txt", help="Path to the training data file")
     parser.add_argument("--val_path", type=str, default="data/TinyStoriesV2-GPT4-valid.txt", help="Path to the validation data file")
+    parser.add_argument("--training_run", type=str, default="2025_12_14", help="Training run identifier string")
+    parser.add_argument("-ckpt", "--ckpt_path", type=str, default=None, help="Ckpt path to load model + opt from")
     return parser
 
 def validate(model : TransformerLM, dataset : np.ndarray,  loss : CrossEntropy, cfg : TrainConfig, device) -> float:
@@ -178,12 +187,17 @@ if __name__ == "__main__":
     opt = AdamW(model.parameters(), cfg.learning_rate, (cfg.adamw_beta1, cfg.adamw_beta2), cfg.adamw_eps, cfg.adamw_weight_decay)
     loss = CrossEntropy()
 
+    if cfg.ckpt_path is not None and exists(cfg.ckpt_path):
+        start_iter = load_checkpoint(cfg.ckpt_path, model, opt) + 1
+    else:
+        start_iter = 1
+
     n_total_steps = math.ceil(cfg.total_tokens_processed / (cfg.batch_size * cfg.context_length))
 
     n_train_steps_per_iter = n_total_steps // N_VAL
     n_iters = n_total_steps // n_train_steps_per_iter
 
-    print(f"Training for n_iters={n_iters}, n_train_steps_per_iter={n_train_steps_per_iter}")
+    print(f"Training for n_iters={n_iters} from start_iter={start_iter}, n_train_steps_per_iter={n_train_steps_per_iter}")
 
     train_losses = []
     val_losses = []
@@ -193,12 +207,15 @@ if __name__ == "__main__":
     val_max_token_gen = 64
     val_starting_toks : list[int] = tokenizer.encode("This is the start of an important message:\n")
 
+    model_dir = join(MODEL_CACHE_DIR, cfg.training_run)
+    os.makedirs(model_dir, exist_ok=True)
+
     torch.autograd.set_detect_anomaly(True)
     val_text = generate_text(model, tokenizer, val_starting_toks, val_max_token_gen, temperature=val_text_gen_temp, p_sample=val_text_p_sample)
-    print(f"[-1] Val generated text (temp={val_text_gen_temp}):\n{val_text}\n")
+    print(f"[{start_iter-1}] Val generated text (temp={val_text_gen_temp}):\n{val_text}\n")
     val_loss_val = validate(model, val_dataset, loss, cfg, device)
-    print(f"[-1] Val loss value: {val_loss_val:.3f}")
-    for iter in tqdm(range(n_iters), desc="Training iter", leave=True):
+    print(f"[{start_iter-1}] Val loss value: {val_loss_val:.3f}")
+    for iter in tqdm(range(start_iter, n_iters), desc="Training iter", leave=True):
         train_loss_val = train(model, opt, train_dataset, loss, cfg, n_train_steps_per_iter, device)
         print(f"[{iter}] Train loss: {train_loss_val:.3f}")
         val_text = generate_text(model, tokenizer, val_starting_toks, val_max_token_gen, temperature=val_text_gen_temp, p_sample=val_text_p_sample)
@@ -208,6 +225,11 @@ if __name__ == "__main__":
         train_losses.append(train_loss_val)
         val_losses.append(val_loss_val)
         val_texts.append(val_text)
+
+        if iter % SAVE_MODEL_EVERY_N_ITERS == 0:
+            out_path = join(model_dir, f"model_{iter}_val_loss_{val_loss_val:.3f}.ckpt")
+            save_checkpoint(model, opt, iter, out_path)
+            print(f"Saved iter={iter} ckpt to {out_path}")
 
         
 

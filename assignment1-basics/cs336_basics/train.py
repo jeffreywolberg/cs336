@@ -101,8 +101,8 @@ def get_tokenizer(cfg : TrainConfig) -> BPETokenizer:
 def get_datasets(cfg : TrainConfig):
     train_dataset_cache_dir = join(DATASET_CACHE_DIR, splitext(basename(cfg.train_path))[0])
     val_dataset_cache_dir = join(DATASET_CACHE_DIR, splitext(basename(cfg.val_path))[0])
-    train_dataset_cache_path = join(train_dataset_cache_dir, 'data.npy')
-    val_dataset_cache_path = join(val_dataset_cache_dir, 'data.npy')
+    train_dataset_cache_path = join(train_dataset_cache_dir, 'data.npz')
+    val_dataset_cache_path = join(val_dataset_cache_dir, 'data.npz')
     
     if not exists(train_dataset_cache_path) or not exists(val_dataset_cache_path):
         tokenizer : BPETokenizer = get_tokenizer(cfg)
@@ -125,13 +125,13 @@ def get_datasets(cfg : TrainConfig):
         val_tokens : np.ndarray = get_tokens(cfg.val_path)
         os.makedirs(train_dataset_cache_dir, exist_ok=True)
         os.makedirs(val_dataset_cache_dir, exist_ok=True)
-        np.save(train_dataset_cache_path, train_tokens)
-        np.save(val_dataset_cache_path, val_tokens)
+        np.savez_compressed(train_dataset_cache_path, data=train_tokens)
+        np.savez_compressed(val_dataset_cache_path, data=val_tokens)
         print(f"Saved train dataset to {train_dataset_cache_path}")
         print(f"Saved val dataset to {val_dataset_cache_path}")
     else:
-        train_tokens = np.load(train_dataset_cache_path, mmap_mode='r')
-        val_tokens = np.load(val_dataset_cache_path, mmap_mode='r')
+        train_tokens = np.load(train_dataset_cache_path, mmap_mode='r')['data']
+        val_tokens = np.load(val_dataset_cache_path, mmap_mode='r')['data']
         print(f"Loaded train dataset from {train_dataset_cache_path}")
         print(f"Loaded val dataset from {val_dataset_cache_path}")
 

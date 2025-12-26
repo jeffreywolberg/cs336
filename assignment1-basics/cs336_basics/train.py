@@ -27,8 +27,8 @@ TOKENIZER_CACHE_DIR = join(CACHE_DIR, "tokenizer")
 DATASET_CACHE_DIR = join(CACHE_DIR, "dataset")
 TOKENIZER_SPECIAL_TOKENS = ["<|endoftext|>"]
 
-N_VAL = 2000
-N_VAL_STEPS = 25
+N_VAL = 200
+N_VAL_STEPS = 50
 SAVE_MODEL_EVERY_N_ITERS = 25
 
 
@@ -154,7 +154,7 @@ def get_argparser():
     parser.add_argument("--adamw_beta2", type=float, default=0.999, help="AdamW beta2 (default: 0.999)")
     parser.add_argument("--adamw_eps", type=float, default=1e-8, help="AdamW epsilon (default: 1e-8)")
     parser.add_argument("--adamw_weight_decay", type=float, default=1.e-2, help="AdamW weight decay")
-    parser.add_argument("--batch_size", type=int, default=32, help="Batch size (default: 32)")
+    parser.add_argument("--batch_size", type=int, default=256, help="Batch size (default: 32)")
     parser.add_argument("--total_tokens_processed", type=int, default=327_680_000, help="Number of total tokens to process = batch_size x total_step_count x context_length")
     parser.add_argument("--train_path", type=str, default="data/TinyStoriesV2-GPT4-train.txt", help="Path to the training data file")
     parser.add_argument("--val_path", type=str, default="data/TinyStoriesV2-GPT4-valid.txt", help="Path to the validation data file")

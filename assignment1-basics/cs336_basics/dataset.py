@@ -1,8 +1,9 @@
 import torch
 import numpy.typing as npt
+import numpy as np
 
 def get_batch(
-    dataset: npt.NDArray, batch_size: int, context_length: int, device: str
+    dataset: npt.NDArray | torch.Tensor, batch_size: int, context_length: int, device: str
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Given a dataset (a 1D numpy array of integers) and a desired batch size and
@@ -21,10 +22,13 @@ def get_batch(
         is the sampled input sequences, and the second tuple item is the corresponding
         language modeling labels.
     """
-    seq_st = torch.randint(0, len(dataset) - context_length, size=(batch_size,), device=device)
+    if isinstance(dataset, np.ndarray):
+        dataset_tensor = torch.tensor(dataset, device=device)
+    else:
+        dataset_tensor = dataset
 
+    seq_st = torch.randint(0, len(dataset) - context_length, size=(batch_size,), device=device)
     st_inds = seq_st[:, None] + torch.arange(context_length, device=device)[None, :]
-    dataset_tensor = torch.tensor(dataset, device=device)
     seqs = dataset_tensor[st_inds]
     labels = dataset_tensor[st_inds+1]
 

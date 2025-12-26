@@ -1,7 +1,7 @@
 import argparse
 import math
 import os
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import numpy as np
 from os.path import join, basename, exists, splitext
 
@@ -27,8 +27,7 @@ TOKENIZER_CACHE_DIR = join(CACHE_DIR, "tokenizer")
 DATASET_CACHE_DIR = join(CACHE_DIR, "dataset")
 TOKENIZER_SPECIAL_TOKENS = ["<|endoftext|>"]
 
-N_VAL = 200
-N_VAL_STEPS = 50
+N_VAL = 100
 SAVE_MODEL_EVERY_N_ITERS = 25
 
 
@@ -98,7 +97,7 @@ def get_tokenizer(cfg : TrainConfig) -> BPETokenizer:
     
     return tokenizer
 
-def get_datasets(cfg : TrainConfig):
+def get_datasets(cfg : TrainConfig) -> Tuple[torch.Tensor, torch.Tensor]:
     train_dataset_cache_dir = join(DATASET_CACHE_DIR, splitext(basename(cfg.train_path))[0])
     val_dataset_cache_dir = join(DATASET_CACHE_DIR, splitext(basename(cfg.val_path))[0])
     train_dataset_cache_path = join(train_dataset_cache_dir, 'data.npz')
@@ -135,6 +134,8 @@ def get_datasets(cfg : TrainConfig):
         print(f"Loaded train dataset from {train_dataset_cache_path}")
         print(f"Loaded val dataset from {val_dataset_cache_path}")
 
+    train_tokens = torch.tensor(train_tokens, device=cfg.device)
+    val_tokens = torch.tensor(val_tokens, device=cfg.device)
     # return val_tokens, val_tokens
     return train_tokens, val_tokens
 
@@ -154,31 +155,33 @@ def get_argparser():
     parser.add_argument("--adamw_beta2", type=float, default=0.999, help="AdamW beta2 (default: 0.999)")
     parser.add_argument("--adamw_eps", type=float, default=1e-8, help="AdamW epsilon (default: 1e-8)")
     parser.add_argument("--adamw_weight_decay", type=float, default=1.e-2, help="AdamW weight decay")
-    parser.add_argument("--batch_size", type=int, default=256, help="Batch size (default: 32)")
+    parser.add_argument("--batch_size", type=int, default=256, help="Batch size (default: 256)")
     parser.add_argument("--total_tokens_processed", type=int, default=327_680_000, help="Number of total tokens to process = batch_size x total_step_count x context_length")
     parser.add_argument("--train_path", type=str, default="data/TinyStoriesV2-GPT4-train.txt", help="Path to the training data file")
     parser.add_argument("--val_path", type=str, default="data/TinyStoriesV2-GPT4-valid.txt", help="Path to the validation data file")
-    parser.add_argument("-ckpt", "--ckpt_path", type=str, default="training_runs/2025_12_14/models/model_649_val_loss_1.239.ckpt", help="Ckpt path to load model + opt from")
+    # parser.add_argument("-ckpt", "--ckpt_path", type=str, default="training_runs/2025_12_14/models/model_649_val_loss_1.239.ckpt", help="Ckpt path to load model + opt from")
+    parser.add_argument("-ckpt", "--ckpt_path", type=str, default=None, help="Ckpt path to load model + opt from")
     parser.add_argument("-device", "--device", type=str, default="cuda:0", help="Device to run on")
     # parser.add_argument("-device", "--device", type=str, default="mps:0", help="Device to run on")
     
     parser.add_argument("-name", "--training_run", type=str, required=True, help="Training run identifier string")
     return parser
 
-def validate(model : TransformerLM, dataset : np.ndarray,  loss : CrossEntropy, cfg : TrainConfig, device) -> float:
+def validate(model : TransformerLM, dataset : torch.Tensor,  loss : CrossEntropy, cfg : TrainConfig, n_val_steps_per_iter : int, device) -> float:
     loss_val = 0.0
     model.eval()
     with torch.no_grad():
-        for step in tqdm(range(N_VAL_STEPS), desc="Val step", leave=False):
+        for step in tqdm(range(n_val_steps_per_iter), desc="Val step", leave=False):
             input_tokens, targets = get_batch(dataset, cfg.batch_size, cfg.context_length, device)
             input_tokens, targets = input_tokens.to(device), targets.to(device)
             preds = model(input_tokens)
             loss_output = loss(preds.reshape(-1, cfg.vocab_size), targets.reshape(-1))
             loss_val += loss_output.item()
-    return loss_val / N_VAL_STEPS
+    return loss_val / n_val_steps_per_iter
 
-def train(model : TransformerLM, opt : AdamW, dataset : np.ndarray, loss : CrossEntropy, cfg : TrainConfig, num_train_steps : int, device) -> float:
+def train(model : TransformerLM, opt : AdamW, dataset : torch.Tensor, loss : CrossEntropy, cfg : TrainConfig, num_train_steps : int, device) -> float:
     loss_val = 0.0
+    model.train()
     for step in tqdm(range(num_train_steps), desc="Train step within iter", leave=False):
         opt.zero_grad()
         input_tokens, targets = get_batch(dataset, cfg.batch_size, cfg.context_length, device)
@@ -208,6 +211,8 @@ if __name__ == "__main__":
 
     cfg = TrainConfig.from_args(args)
     device = torch.device(args.device)
+    if "cuda" in str(device):
+        torch.set_float32_matmul_precision('high')
 
     tokenizer = get_tokenizer(cfg)
     train_dataset, val_dataset = get_datasets(cfg)
@@ -224,6 +229,7 @@ if __name__ == "__main__":
     n_total_steps = math.ceil(cfg.total_tokens_processed / (cfg.batch_size * cfg.context_length))
 
     n_train_steps_per_iter = n_total_steps // N_VAL
+    n_val_steps_per_iter = n_train_steps_per_iter // 4 # good rule of thumb
     n_iters = n_total_steps // n_train_steps_per_iter
 
     training_dir = join(TRAINING_DIR, cfg.training_run)
@@ -241,17 +247,16 @@ if __name__ == "__main__":
     val_starting_toks : list[int] = tokenizer.encode("This is the start of an important message:\n")
 
 
-    torch.autograd.set_detect_anomaly(True)
     val_text = generate_text(model, tokenizer, val_starting_toks, val_max_token_gen, temperature=val_text_gen_temp, p_sample=val_text_p_sample)
     print(f"[{start_iter-1}] Val generated text (temp={val_text_gen_temp}):\n{val_text}\n")
-    val_loss_val = validate(model, val_dataset, loss, cfg, device)
+    val_loss_val = validate(model, val_dataset, loss, cfg, n_val_steps_per_iter, device)
     print(f"[{start_iter-1}] Val loss value: {val_loss_val:.3f}")
     for iter in tqdm(range(start_iter, n_iters), desc="Training iter", leave=True):
         train_loss_val = train(model, opt, train_dataset, loss, cfg, n_train_steps_per_iter, device)
         print(f"[{iter}] Train loss: {train_loss_val:.3f}")
         val_text = generate_text(model, tokenizer, val_starting_toks, val_max_token_gen, temperature=val_text_gen_temp, p_sample=val_text_p_sample)
         print(f"[{iter}] Val generated text (temp={val_text_gen_temp}):\n{val_text}\n")
-        val_loss_val = validate(model, val_dataset, loss, cfg, device)
+        val_loss_val = validate(model, val_dataset, loss, cfg, n_val_steps_per_iter, device)
         print(f"[{iter}] Val loss: {val_loss_val:.3f}")
         train_losses.append(train_loss_val)
         val_losses.append(val_loss_val)

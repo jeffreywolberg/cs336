@@ -248,7 +248,7 @@ class TransformerBlock(nn.Module):
     def forward(self, x : torch.Tensor):
         # x (B, S, d)
         B, S, _ = x.shape
-        token_positions = torch.arange(0, S)[None].tile((B, 1))
+        token_positions = torch.arange(0, S, device=x.device)[None].tile((B, 1))
         x = x + self.attn(self.ln1(x), token_positions)
         x = x + self.ffn(self.ln2(x))
 

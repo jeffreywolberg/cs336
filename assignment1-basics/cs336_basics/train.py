@@ -25,7 +25,6 @@ TRAINING_DIR = "training_runs"
 CACHE_DIR = "data/cache"
 TOKENIZER_CACHE_DIR = join(CACHE_DIR, "tokenizer")
 DATASET_CACHE_DIR = join(CACHE_DIR, "dataset")
-MODEL_CACHE_DIR = join(CACHE_DIR, "model")
 TOKENIZER_SPECIAL_TOKENS = ["<|endoftext|>"]
 
 N_VAL = 2000
@@ -227,6 +226,8 @@ if __name__ == "__main__":
     training_dir = join(TRAINING_DIR, cfg.training_run)
     os.makedirs(training_dir, exist_ok=True)
     print(f"Training for n_iters={n_iters} from start_iter={start_iter}, n_train_steps_per_iter={n_train_steps_per_iter}")
+    model_dir = join(training_dir, "models")
+    os.makedirs(model_dir, exist_ok=True)
 
     train_losses = []
     val_losses = []
@@ -236,8 +237,6 @@ if __name__ == "__main__":
     val_max_token_gen = 64
     val_starting_toks : list[int] = tokenizer.encode("This is the start of an important message:\n")
 
-    model_dir = join(MODEL_CACHE_DIR, cfg.training_run)
-    os.makedirs(model_dir, exist_ok=True)
 
     torch.autograd.set_detect_anomaly(True)
     val_text = generate_text(model, tokenizer, val_starting_toks, val_max_token_gen, temperature=val_text_gen_temp, p_sample=val_text_p_sample)

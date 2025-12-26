@@ -51,8 +51,8 @@ class TrainConfig(BaseModel):
     train_path: str = Field(..., description="Path to the training data file")
     val_path: str = Field(..., description="Path to the validation data file")
     training_run: str = Field(..., description="Training run identifier string")
-    ckpt_path: Optional[str] = Field("training_runs/2025_12_14/models/model_649_val_loss_1.239.ckpt", description="Optional checkpoint path to load from")
-    device: str = Field("mps:0", description="Device to run on")
+    ckpt_path: Optional[str] = Field(None, description="Optional checkpoint path to load from")
+    device: str = Field("cpu", description="Device to run on")
 
     @classmethod
     def from_args(cls, args):
@@ -158,8 +158,10 @@ def get_argparser():
     parser.add_argument("--total_tokens_processed", type=int, default=327_680_000, help="Number of total tokens to process = batch_size x total_step_count x context_length")
     parser.add_argument("--train_path", type=str, default="data/TinyStoriesV2-GPT4-train.txt", help="Path to the training data file")
     parser.add_argument("--val_path", type=str, default="data/TinyStoriesV2-GPT4-valid.txt", help="Path to the validation data file")
-    parser.add_argument("--training_run", type=str, default="2025_12_14", help="Training run identifier string")
-    parser.add_argument("-ckpt", "--ckpt_path", type=str, default=None, help="Ckpt path to load model + opt from")
+    parser.add_argument("-ckpt", "--ckpt_path", type=str, default="training_runs/2025_12_14/models/model_649_val_loss_1.239.ckpt", help="Ckpt path to load model + opt from")
+    parser.add_argument("-device", "--device", type=str, default="mps:0", help="Device to run on")
+    
+    parser.add_argument("-name", "--training_run", type=str, required=True, help="Training run identifier string")
     return parser
 
 def validate(model : TransformerLM, dataset : np.ndarray,  loss : CrossEntropy, cfg : TrainConfig, device) -> float:

@@ -51,7 +51,7 @@ class TrainConfig(BaseModel):
     train_path: str = Field(..., description="Path to the training data file")
     val_path: str = Field(..., description="Path to the validation data file")
     training_run: str = Field(..., description="Training run identifier string")
-    ckpt_path: Optional[str] = Field(None, description="Optional checkpoint path to load from")
+    ckpt_path: Optional[str] = Field("training_runs/2025_12_14/models/model_649_val_loss_1.239.ckpt", description="Optional checkpoint path to load from")
     device: str = Field("mps:0", description="Device to run on")
 
     @classmethod

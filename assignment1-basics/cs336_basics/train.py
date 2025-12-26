@@ -1,9 +1,13 @@
 import argparse
 import math
 import os
-from typing import Optional
+from typing import List, Optional
 import numpy as np
 from os.path import join, basename, exists, splitext
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 from pydantic import BaseModel, Field
 from torch import nn
@@ -17,6 +21,7 @@ from cs336_basics.opt import AdamW
 from cs336_basics.tokenizer import BPETokenizer
 from cs336_basics.dataset import get_batch
 
+TRAINING_DIR = "training_runs"
 CACHE_DIR = "data/cache"
 TOKENIZER_CACHE_DIR = join(CACHE_DIR, "tokenizer")
 DATASET_CACHE_DIR = join(CACHE_DIR, "dataset")
@@ -26,6 +31,7 @@ TOKENIZER_SPECIAL_TOKENS = ["<|endoftext|>"]
 N_VAL = 2000
 N_VAL_STEPS = 25
 SAVE_MODEL_EVERY_N_ITERS = 25
+
 
 class TrainConfig(BaseModel):
     vocab_size: int = Field(..., description="Vocabulary size")
@@ -47,6 +53,7 @@ class TrainConfig(BaseModel):
     val_path: str = Field(..., description="Path to the validation data file")
     training_run: str = Field(..., description="Training run identifier string")
     ckpt_path: Optional[str] = Field(None, description="Optional checkpoint path to load from")
+    device: str = Field("mps:0", description="Device to run on")
 
     @classmethod
     def from_args(cls, args):
@@ -70,6 +77,7 @@ class TrainConfig(BaseModel):
             val_path=args.val_path,
             training_run=args.training_run,
             ckpt_path=args.ckpt_path,
+            device=args.device,
         )
 
 def get_tokenizer(cfg : TrainConfig) -> BPETokenizer:
@@ -179,12 +187,25 @@ def train(model : TransformerLM, opt : AdamW, dataset : np.ndarray, loss : Cross
         loss_val += loss_output.item()
     return loss_val / num_train_steps
 
+def plot_losses(iter : int, train_losses : List[float], val_losses : List[float]):
+    iters = range(iter - len(train_losses) + 1, iter+1)
+    plt.figure()
+    plt.plot(iters, train_losses, label="train loss")
+    plt.plot(iters, val_losses, label="val loss")
+    plt.xlabel("Iteration")
+    plt.ylabel("Loss")
+    plt.title("Train and Validation Loss")
+    plt.legend()
+    loss_fig_path = join(training_dir, "loss.png")
+    plt.savefig(loss_fig_path)
+    plt.close()
+
 if __name__ == "__main__":
     parser = get_argparser()
     args = parser.parse_args()
 
     cfg = TrainConfig.from_args(args)
-    device = torch.device('mps:0')
+    device = torch.device(args.device)
 
     tokenizer = get_tokenizer(cfg)
     train_dataset, val_dataset = get_datasets(cfg)
@@ -203,6 +224,8 @@ if __name__ == "__main__":
     n_train_steps_per_iter = n_total_steps // N_VAL
     n_iters = n_total_steps // n_train_steps_per_iter
 
+    training_dir = join(TRAINING_DIR, cfg.training_run)
+    os.makedirs(training_dir, exist_ok=True)
     print(f"Training for n_iters={n_iters} from start_iter={start_iter}, n_train_steps_per_iter={n_train_steps_per_iter}")
 
     train_losses = []
@@ -231,14 +254,11 @@ if __name__ == "__main__":
         train_losses.append(train_loss_val)
         val_losses.append(val_loss_val)
         val_texts.append(val_text)
+        plot_losses(iter, train_losses, val_losses)
 
         if iter % SAVE_MODEL_EVERY_N_ITERS == 0:
             out_path = join(model_dir, f"model_{iter}_val_loss_{val_loss_val:.3f}.ckpt")
             save_checkpoint(model, opt, iter, out_path)
             print(f"Saved iter={iter} ckpt to {out_path}")
 
-        
-
-
-
-
+    # After training completes, save train/val loss curves.

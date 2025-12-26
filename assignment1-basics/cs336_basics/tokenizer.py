@@ -297,14 +297,9 @@ class BPETokenizer(Tokenizer):
         pretokenized_data_list = self._pretokenize_text(text)
         toks_list = []
 
-        # print(f"len vocab: {len(self._vocab)}")
-        # print(f"len merges: {len(self._merges)}")
-        # for pretokenized_train_data in tqdm(pretokenized_data_list, desc="linked list init"):
-        # print(pretokenized_data_list)
         special_tokens_sorted_by_len = sorted(self.special_tokens, key=lambda k : len(k), reverse=True)
         pos_in_text = 0 
         for p_iter, pretokenized_data in enumerate(pretokenized_data_list):
-            # print(pretokenized_data)
             for word in pretokenized_data:
                 if isinstance(word, re.Match):
                     word = word.group()

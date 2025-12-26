@@ -294,5 +294,7 @@ def load_checkpoint(src, model: nn.Module, optimizer: torch.optim.Optimizer):
     data = torch.load(src)
     model.load_state_dict(data['model'])
     optimizer.load_state_dict(data['opt'])
-    return data['iteration']
+    iteration = data['iteration']
+    print(f"Successfully loaded ckpt from {src}")
+    return iteration
     

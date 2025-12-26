@@ -290,8 +290,8 @@ def save_checkpoint(model: nn.Module, optimizer: torch.optim.Optimizer, iteratio
     }
     torch.save(data, out)
 
-def load_checkpoint(src, model: nn.Module, optimizer: torch.optim.Optimizer):
-    data = torch.load(src)
+def load_checkpoint(src, model: nn.Module, optimizer: torch.optim.Optimizer, map_location : str):
+    data = torch.load(src, map_location=map_location)
     model.load_state_dict(data['model'])
     optimizer.load_state_dict(data['opt'])
     iteration = data['iteration']

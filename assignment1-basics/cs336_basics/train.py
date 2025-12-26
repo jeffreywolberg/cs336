@@ -1,6 +1,7 @@
 import argparse
 import math
 import os
+import time
 from typing import List, Optional, Tuple
 import numpy as np
 from os.path import join, basename, exists, splitext
@@ -29,7 +30,6 @@ TOKENIZER_SPECIAL_TOKENS = ["<|endoftext|>"]
 
 N_VAL = 100
 SAVE_MODEL_EVERY_N_ITERS = 25
-
 
 class TrainConfig(BaseModel):
     vocab_size: int = Field(..., description="Vocabulary size")
@@ -192,6 +192,18 @@ def train(model : TransformerLM, opt : AdamW, dataset : torch.Tensor, loss : Cro
         loss_val += loss_output.item()
     return loss_val / num_train_steps
 
+def _sync_if_cuda(device: torch.device) -> None:
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+
+def _timed_call(fn, device: torch.device):
+    _sync_if_cuda(device)
+    t0 = time.perf_counter()
+    out = fn()
+    _sync_if_cuda(device)
+    t1 = time.perf_counter()
+    return out, (t1 - t0)
+
 def plot_losses(iter : int, train_losses : List[float], val_losses : List[float]):
     iters = range(iter - len(train_losses) + 1, iter+1)
     plt.figure()
@@ -203,6 +215,19 @@ def plot_losses(iter : int, train_losses : List[float], val_losses : List[float]
     plt.legend()
     loss_fig_path = join(training_dir, "loss.png")
     plt.savefig(loss_fig_path)
+    plt.close()
+
+def plot_times(iter : int, train_times_s : List[float], val_times_s : List[float]):
+    iters = range(iter - len(train_times_s) + 1, iter+1)
+    plt.figure()
+    plt.plot(iters, train_times_s, label="train time (s)")
+    plt.plot(iters, val_times_s, label="val time (s)")
+    plt.xlabel("Iteration")
+    plt.ylabel("Wall-clock time (seconds)")
+    plt.title("Train and Validation Wall-clock Time")
+    plt.legend()
+    time_fig_path = join(training_dir, "time.png")
+    plt.savefig(time_fig_path)
     plt.close()
 
 if __name__ == "__main__":
@@ -229,7 +254,7 @@ if __name__ == "__main__":
     n_total_steps = math.ceil(cfg.total_tokens_processed / (cfg.batch_size * cfg.context_length))
 
     n_train_steps_per_iter = n_total_steps // N_VAL
-    n_val_steps_per_iter = n_train_steps_per_iter // 4 # good rule of thumb
+    n_val_steps_per_iter = n_train_steps_per_iter // 2 # good rule of thumb
     n_iters = n_total_steps // n_train_steps_per_iter
 
     training_dir = join(TRAINING_DIR, cfg.training_run)
@@ -240,6 +265,8 @@ if __name__ == "__main__":
 
     train_losses = []
     val_losses = []
+    train_times_s = []
+    val_times_s = []
     val_texts = []
     val_text_gen_temp = 2.0
     val_text_p_sample = 0.01
@@ -252,16 +279,25 @@ if __name__ == "__main__":
     val_loss_val = validate(model, val_dataset, loss, cfg, n_val_steps_per_iter, device)
     print(f"[{start_iter-1}] Val loss value: {val_loss_val:.3f}")
     for iter in tqdm(range(start_iter, n_iters), desc="Training iter", leave=True):
-        train_loss_val = train(model, opt, train_dataset, loss, cfg, n_train_steps_per_iter, device)
+        train_loss_val, train_time_s = _timed_call(
+            lambda: train(model, opt, train_dataset, loss, cfg, n_train_steps_per_iter, device),
+            device,
+        )
         print(f"[{iter}] Train loss: {train_loss_val:.3f}")
         val_text = generate_text(model, tokenizer, val_starting_toks, val_max_token_gen, temperature=val_text_gen_temp, p_sample=val_text_p_sample)
         print(f"[{iter}] Val generated text (temp={val_text_gen_temp}):\n{val_text}\n")
-        val_loss_val = validate(model, val_dataset, loss, cfg, n_val_steps_per_iter, device)
+        val_loss_val, val_time_s = _timed_call(
+            lambda: validate(model, val_dataset, loss, cfg, n_val_steps_per_iter, device),
+            device,
+        )
         print(f"[{iter}] Val loss: {val_loss_val:.3f}")
         train_losses.append(train_loss_val)
         val_losses.append(val_loss_val)
+        train_times_s.append(train_time_s)
+        val_times_s.append(val_time_s)
         val_texts.append(val_text)
         plot_losses(iter, train_losses, val_losses)
+        plot_times(iter, train_times_s, val_times_s)
 
         if iter % SAVE_MODEL_EVERY_N_ITERS == 0:
             out_path = join(model_dir, f"model_{iter}_val_loss_{val_loss_val:.3f}.ckpt")

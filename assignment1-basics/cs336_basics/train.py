@@ -1,4 +1,5 @@
 import argparse
+import json
 import math
 import os
 import time
@@ -18,7 +19,7 @@ from tqdm import tqdm
 from cs336_basics.generate import generate_text
 from cs336_basics.loss import CrossEntropy
 from cs336_basics.model import TransformerLM, load_checkpoint, save_checkpoint
-from cs336_basics.opt import AdamW
+from cs336_basics.opt import AdamW, CosineLRSched, clip_gradients
 from cs336_basics.tokenizer import BPETokenizer
 from cs336_basics.dataset import get_batch
 
@@ -39,8 +40,7 @@ class TrainConfig(BaseModel):
     rope_theta: float = Field(..., description="Rotary Embedding theta")
     num_layers: int = Field(..., description="Number of transformer layers")
     num_heads: int = Field(..., description="Number of attention heads")
-    learning_rate: float = Field(..., description="AdamW base learning rate")
-    learning_rate_warmup: int = Field(..., description="Learning rate warmup steps")
+    max_l2_norm : float = Field(..., description="Max l2 norm of gradient during backward pass. Clipped above this value")
     adamw_beta1: float = Field(..., description="AdamW beta1")
     adamw_beta2: float = Field(..., description="AdamW beta2")
     adamw_eps: float = Field(..., description="AdamW epsilon")
@@ -53,6 +53,11 @@ class TrainConfig(BaseModel):
     device: str = Field(..., description="Device to run on")
     ckpt_path: Optional[str] = Field(None, description="Optional checkpoint path to load from")
 
+    lr_sched_min_learning_rate: float = Field(..., description="Minimum learning rate for cosine scheduler")
+    lr_sched_max_learning_rate: float = Field(..., description="Maximum (initial) learning rate for cosine scheduler")
+    lr_sched_warmup_steps_pct: float = Field(..., description="Pct of total steps for warmup steps for LR scheduler")
+    lr_sched_cosine_cycle_steps_pct: float = Field(..., description="Pct of total steps for cosine cycle iterations for LR scheduler")
+
     @classmethod
     def from_args(cls, args):
         return cls(
@@ -63,8 +68,7 @@ class TrainConfig(BaseModel):
             rope_theta=args.rope_theta,
             num_layers=args.num_layers,
             num_heads=args.num_heads,
-            learning_rate=args.learning_rate,
-            learning_rate_warmup=args.learning_rate_warmup,
+            max_l2_norm=args.max_l2_norm,
             adamw_beta1=args.adamw_beta1,
             adamw_beta2=args.adamw_beta2,
             adamw_eps=args.adamw_eps,
@@ -76,7 +80,46 @@ class TrainConfig(BaseModel):
             training_run=args.training_run,
             ckpt_path=args.ckpt_path,
             device=args.device,
+            lr_sched_min_learning_rate=args.lr_sched_min_learning_rate,
+            lr_sched_max_learning_rate=args.lr_sched_max_learning_rate,
+            lr_sched_warmup_steps_pct=args.lr_sched_warmup_steps_pct,
+            lr_sched_cosine_cycle_steps_pct=args.lr_sched_cosine_cycle_steps_pct,
         )
+
+def get_argparser():
+    is_mac = torch.backends.mps.is_available()
+    print(f"is_mac: {is_mac}")
+    
+    parser = argparse.ArgumentParser(description="Training arguments for TransformerLM")
+
+    parser.add_argument("--vocab_size", type=int, default=10000, help="Vocabulary size (default: 10000)")
+    parser.add_argument("--context_length", type=int, default=256, help="Context length (default: 256)")
+    parser.add_argument("--d_model", type=int, default=512, help="Transformer model dimension (default: 512)")
+    parser.add_argument("--d_ff", type=int, default=1344, help="Feed-forward (FFN) dimension (default: 1344)")
+    parser.add_argument("--rope_theta", type=float, default=10000, help="Rotary Embedding theta (default: 10000)")
+    parser.add_argument("--num_layers", type=int, default=4, help="Number of transformer layers (default: 4)")
+    parser.add_argument("--num_heads", type=int, default=16, help="Number of attention heads (default: 16)")
+    parser.add_argument("--max_l2_norm", type=float, default=1.0, help="Maximum L2 norm for gradient clipping")
+    parser.add_argument("--adamw_beta1", type=float, default=0.9, help="AdamW beta1 (default: 0.9)")
+    parser.add_argument("--adamw_beta2", type=float, default=0.999, help="AdamW beta2 (default: 0.999)")
+    parser.add_argument("--adamw_eps", type=float, default=1e-8, help="AdamW epsilon (default: 1e-8)")
+    parser.add_argument("--adamw_weight_decay", type=float, default=1.e-2, help="AdamW weight decay")
+    parser.add_argument("--batch_size", type=int, default=32 if is_mac else 256, help="Batch size")
+    parser.add_argument("--total_tokens_processed", type=int, default=40_000_000 if is_mac else 327_680_000, help="Number of total tokens to process = batch_size x total_step_count x context_length")
+    parser.add_argument("--train_path", type=str, default="data/TinyStoriesV2-GPT4-train.txt", help="Path to the training data file")
+    parser.add_argument("--val_path", type=str, default="data/TinyStoriesV2-GPT4-valid.txt", help="Path to the validation data file")
+    # parser.add_argument("-ckpt", "--ckpt_path", type=str, default="training_runs/2025_12_14/models/model_649_val_loss_1.239.ckpt", help="Ckpt path to load model + opt from")
+    parser.add_argument("-ckpt", "--ckpt_path", type=str, default=None, help="Ckpt path to load model + opt from")
+    parser.add_argument("-device", "--device", type=str, default="mps:0" if is_mac else "cuda:0", help="Device to run on")
+    parser.add_argument("-name", "--training_run", type=str, required=True, help="Training run identifier string")
+
+    # Add cosine LR scheduler arguments
+    parser.add_argument("--lr_sched_min_learning_rate", type=float, default=1e-3, help="Minimum learning rate for cosine scheduler")
+    parser.add_argument("--lr_sched_max_learning_rate", type=float, default=1e-2, help="Maximum (initial) learning rate for cosine scheduler")
+    parser.add_argument("--lr_sched_warmup_steps_pct", type=int, default=0.025, help="Pct of total iters for warming up the LR scheduler")
+    parser.add_argument("--lr_sched_cosine_cycle_steps_pct", type=int, default=1.0, help="Pct of total iters for cosine cycle iterations for LR scheduler")
+    
+    return parser
 
 def get_tokenizer(cfg : TrainConfig) -> BPETokenizer:
     train_data_name = splitext(basename(cfg.train_path))[0]
@@ -139,35 +182,7 @@ def get_datasets(cfg : TrainConfig) -> Tuple[torch.Tensor, torch.Tensor]:
     # return val_tokens, val_tokens
     return train_tokens, val_tokens
 
-def get_argparser():
-    parser = argparse.ArgumentParser(description="Training arguments for TransformerLM")
-
-    parser.add_argument("--vocab_size", type=int, default=10000, help="Vocabulary size (default: 10000)")
-    parser.add_argument("--context_length", type=int, default=256, help="Context length (default: 256)")
-    parser.add_argument("--d_model", type=int, default=512, help="Transformer model dimension (default: 512)")
-    parser.add_argument("--d_ff", type=int, default=1344, help="Feed-forward (FFN) dimension (default: 1344)")
-    parser.add_argument("--rope_theta", type=float, default=10000, help="Rotary Embedding theta (default: 10000)")
-    parser.add_argument("--num_layers", type=int, default=4, help="Number of transformer layers (default: 4)")
-    parser.add_argument("--num_heads", type=int, default=16, help="Number of attention heads (default: 16)")
-    parser.add_argument("--learning_rate", type=float, default=1e-4, help="AdamW base learning rate (default: 1e-4)")
-    parser.add_argument("--learning_rate_warmup", type=int, default=100, help="Learning rate warmup steps (default: 100)")
-    parser.add_argument("--adamw_beta1", type=float, default=0.9, help="AdamW beta1 (default: 0.9)")
-    parser.add_argument("--adamw_beta2", type=float, default=0.999, help="AdamW beta2 (default: 0.999)")
-    parser.add_argument("--adamw_eps", type=float, default=1e-8, help="AdamW epsilon (default: 1e-8)")
-    parser.add_argument("--adamw_weight_decay", type=float, default=1.e-2, help="AdamW weight decay")
-    parser.add_argument("--batch_size", type=int, default=256, help="Batch size (default: 256)")
-    parser.add_argument("--total_tokens_processed", type=int, default=327_680_000, help="Number of total tokens to process = batch_size x total_step_count x context_length")
-    parser.add_argument("--train_path", type=str, default="data/TinyStoriesV2-GPT4-train.txt", help="Path to the training data file")
-    parser.add_argument("--val_path", type=str, default="data/TinyStoriesV2-GPT4-valid.txt", help="Path to the validation data file")
-    # parser.add_argument("-ckpt", "--ckpt_path", type=str, default="training_runs/2025_12_14/models/model_649_val_loss_1.239.ckpt", help="Ckpt path to load model + opt from")
-    parser.add_argument("-ckpt", "--ckpt_path", type=str, default=None, help="Ckpt path to load model + opt from")
-    parser.add_argument("-device", "--device", type=str, default="cuda:0", help="Device to run on")
-    # parser.add_argument("-device", "--device", type=str, default="mps:0", help="Device to run on")
-    
-    parser.add_argument("-name", "--training_run", type=str, required=True, help="Training run identifier string")
-    return parser
-
-def validate(model : TransformerLM, dataset : torch.Tensor,  loss : CrossEntropy, cfg : TrainConfig, n_val_steps_per_iter : int, device) -> float:
+def validate(model : TransformerLM, dataset : torch.Tensor,  loss : CrossEntropy, cfg : TrainConfig, n_val_steps_per_iter : int, device : torch.device) -> float:
     loss_val = 0.0
     model.eval()
     with torch.no_grad():
@@ -179,7 +194,7 @@ def validate(model : TransformerLM, dataset : torch.Tensor,  loss : CrossEntropy
             loss_val += loss_output.item()
     return loss_val / n_val_steps_per_iter
 
-def train(model : TransformerLM, opt : AdamW, dataset : torch.Tensor, loss : CrossEntropy, cfg : TrainConfig, num_train_steps : int, device) -> float:
+def train(model : TransformerLM, opt : AdamW, lr_sched : torch.optim.lr_scheduler.LRScheduler, dataset : torch.Tensor, loss : CrossEntropy, cfg : TrainConfig, num_train_steps : int, device : torch.device) -> float:
     loss_val = 0.0
     model.train()
     for step in tqdm(range(num_train_steps), desc="Train step within iter", leave=False):
@@ -188,7 +203,9 @@ def train(model : TransformerLM, opt : AdamW, dataset : torch.Tensor, loss : Cro
         preds = model(input_tokens)
         loss_output = loss(preds.reshape(-1, cfg.vocab_size), targets.reshape(-1))
         loss_output.backward()
+        clip_gradients(model.parameters(), cfg.max_l2_norm)
         opt.step()
+        lr_sched.step()
         loss_val += loss_output.item()
     return loss_val / num_train_steps
 
@@ -235,7 +252,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     cfg = TrainConfig.from_args(args)
-    device = torch.device(args.device)
+    device = torch.device(cfg.device)
+    n_total_steps = math.ceil(cfg.total_tokens_processed / (cfg.batch_size * cfg.context_length))
+
     if "cuda" in str(device):
         torch.set_float32_matmul_precision('high')
 
@@ -243,15 +262,22 @@ if __name__ == "__main__":
     train_dataset, val_dataset = get_datasets(cfg)
 
     model = TransformerLM(cfg.vocab_size, cfg.context_length, cfg.d_model, cfg.num_layers, cfg.num_heads, cfg.d_ff, cfg.rope_theta, device=device)
-    opt = AdamW(model.parameters(), cfg.learning_rate, (cfg.adamw_beta1, cfg.adamw_beta2), cfg.adamw_eps, cfg.adamw_weight_decay)
-    loss = CrossEntropy()
+    if torch.backends.mps.is_available():
+        model = torch.compile(model, backend="aot_eager")
+    elif not torch.cuda.is_available():
+        model = torch.compile(model)
+        
+    opt = AdamW(model.parameters(), None, (cfg.adamw_beta1, cfg.adamw_beta2), cfg.adamw_eps, cfg.adamw_weight_decay)
+    lr_sched = CosineLRSched(opt, cfg.lr_sched_min_learning_rate, cfg.lr_sched_max_learning_rate, int(n_total_steps * cfg.lr_sched_warmup_steps_pct), int(n_total_steps * cfg.lr_sched_cosine_cycle_steps_pct))
 
     if cfg.ckpt_path is not None and exists(cfg.ckpt_path):
-        start_iter = load_checkpoint(cfg.ckpt_path, model, opt, map_location=device) + 1
+        start_iter = load_checkpoint(cfg.ckpt_path, model, opt, lr_sched, map_location=device) + 1
     else:
         start_iter = 1
 
-    n_total_steps = math.ceil(cfg.total_tokens_processed / (cfg.batch_size * cfg.context_length))
+
+    loss = CrossEntropy()
+
 
     n_train_steps_per_iter = n_total_steps // N_VAL
     n_val_steps_per_iter = n_train_steps_per_iter // 2 # good rule of thumb
@@ -260,8 +286,15 @@ if __name__ == "__main__":
     training_dir = join(TRAINING_DIR, cfg.training_run)
     os.makedirs(training_dir, exist_ok=True)
     print(f"Training for n_iters={n_iters} from start_iter={start_iter}, n_train_steps_per_iter={n_train_steps_per_iter}")
+    
     model_dir = join(training_dir, "models")
     os.makedirs(model_dir, exist_ok=True)
+    
+    params = cfg.model_dump(mode='json')
+    params_path = join(training_dir, "params.json")
+    with open(params_path, 'w') as f:
+        json.dump(params, f)
+    print(f"Saved params to {params_path}")
 
     train_losses = []
     val_losses = []
@@ -271,7 +304,8 @@ if __name__ == "__main__":
     val_text_gen_temp = 2.0
     val_text_p_sample = 0.01
     val_max_token_gen = 64
-    val_starting_toks : list[int] = tokenizer.encode("This is the start of an important message:\n")
+    val_starting_toks : list[int] = tokenizer.encode("\n") # HACK. fails if you pass in an empty tensor
+    print(f"val_starting_toks: {val_starting_toks}")
 
 
     val_text = generate_text(model, tokenizer, val_starting_toks, val_max_token_gen, temperature=val_text_gen_temp, p_sample=val_text_p_sample)
@@ -280,12 +314,10 @@ if __name__ == "__main__":
     print(f"[{start_iter-1}] Val loss value: {val_loss_val:.3f}")
     for iter in tqdm(range(start_iter, n_iters), desc="Training iter", leave=True):
         train_loss_val, train_time_s = _timed_call(
-            lambda: train(model, opt, train_dataset, loss, cfg, n_train_steps_per_iter, device),
+            lambda: train(model, opt, lr_sched, train_dataset, loss, cfg, n_train_steps_per_iter, device),
             device,
         )
         print(f"[{iter}] Train loss: {train_loss_val:.3f}")
-        val_text = generate_text(model, tokenizer, val_starting_toks, val_max_token_gen, temperature=val_text_gen_temp, p_sample=val_text_p_sample)
-        print(f"[{iter}] Val generated text (temp={val_text_gen_temp}):\n{val_text}\n")
         val_loss_val, val_time_s = _timed_call(
             lambda: validate(model, val_dataset, loss, cfg, n_val_steps_per_iter, device),
             device,
@@ -300,8 +332,11 @@ if __name__ == "__main__":
         plot_times(iter, train_times_s, val_times_s)
 
         if iter % SAVE_MODEL_EVERY_N_ITERS == 0:
+            val_text = generate_text(model, tokenizer, val_starting_toks, val_max_token_gen, temperature=val_text_gen_temp, p_sample=val_text_p_sample)
+            print(f"[{iter}] Val generated text (temp={val_text_gen_temp}):\n{val_text}\n")
+
             out_path = join(model_dir, f"model_{iter}_val_loss_{val_loss_val:.3f}.ckpt")
-            save_checkpoint(model, opt, iter, out_path)
+            save_checkpoint(model, opt, lr_sched, iter, out_path)
             print(f"Saved iter={iter} ckpt to {out_path}")
 
     # After training completes, save train/val loss curves.

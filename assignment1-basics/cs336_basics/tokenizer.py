@@ -293,6 +293,9 @@ class BPETokenizer(Tokenizer):
         return word, False
 
     def encode(self, text : str) -> list[int]:
+        if len(text) == 0:
+            return []
+            
         _inverse_vocab : dict[bytes, int]  = {v : k for k, v in self._vocab.items()}
         pretokenized_data_list = self._pretokenize_text(text)
         toks_list = []

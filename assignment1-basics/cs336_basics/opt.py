@@ -16,7 +16,10 @@ def get_lr_with_cosine_sched(it: int,
     else:
         return min_learning_rate
 
-def clip_gradients(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float, eps: float = 1.e-6):
+def clip_gradients(parameters: Iterable[torch.nn.Parameter], max_l2_norm: Optional[float], eps: float = 1.e-6):
+    if max_l2_norm is None:
+        return 
+
     grad_sum_sq = 0.0
     for p in parameters:
         if p.grad is None:
@@ -29,6 +32,19 @@ def clip_gradients(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float,
             if p.grad is None:
                 continue
             p.grad = p.grad * factor
+
+class CosineLRSched(torch.optim.lr_scheduler.LRScheduler):
+    def __init__(self, optimizer : torch.optim.Optimizer, min_learning_rate : float, max_learning_rate : float, warmup_iters : int, cosine_cycle_iters : int, last_epoch: int = -1):
+        self.min_learning_rate = min_learning_rate
+        self.max_learning_rate = max_learning_rate
+        self.warmup_iters = warmup_iters
+        self.cosine_cycle_iters = cosine_cycle_iters
+        super().__init__(optimizer, last_epoch)
+
+    def get_lr(self):
+        lr = get_lr_with_cosine_sched(self.last_epoch, self.max_learning_rate, self.min_learning_rate, self.warmup_iters, self.cosine_cycle_iters)
+        return [lr for _ in self.optimizer.param_groups]
+
 class AdamW(torch.optim.Optimizer):
     def __init__(self, params: ParamsT, lr = 1.e-3, betas : Tuple[float, float] = (0.9, 0.999), eps=1.e-8, weight_decay=1.e-2) -> None:
         b1, b2 = betas

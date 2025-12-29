@@ -282,18 +282,22 @@ class TransformerLM(nn.Module):
 
         return x
 
-def save_checkpoint(model: nn.Module, optimizer: torch.optim.Optimizer, iteration : int, out):
+def save_checkpoint(model: nn.Module, optimizer: torch.optim.Optimizer, scheduler : torch.optim.lr_scheduler.LRScheduler, iteration : int, out):
     data = {
         "model": model.state_dict(),
         "opt": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict(),
         "iteration": iteration
     }
     torch.save(data, out)
 
-def load_checkpoint(src, model: nn.Module, optimizer: torch.optim.Optimizer, map_location : str):
+def load_checkpoint(src, model: nn.Module, optimizer: torch.optim.Optimizer, scheduler : Optional[torch.optim.lr_scheduler.LRScheduler], map_location : str):
     data = torch.load(src, map_location=map_location)
     model.load_state_dict(data['model'])
     optimizer.load_state_dict(data['opt'])
+    if scheduler is not None:
+        scheduler.load_state_dict(data['scheduler']) # epoch is really optimizer step
+
     iteration = data['iteration']
     print(f"Successfully loaded ckpt from {src}")
     return iteration
